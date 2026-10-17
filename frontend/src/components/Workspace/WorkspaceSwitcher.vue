@@ -1,13 +1,13 @@
 <template>
   <div class="workspace-switcher">
     <el-select
-      :model-value="workspaceStore.currentWorkspaceId"
+      :model-value="workspaceStore.isPersonalMode ? '' : workspaceStore.currentWorkspaceId"
       placeholder="个人空间"
       @change="handleSwitch"
       size="default"
       class="ws-select"
     >
-      <el-option :value="null" label="个人空间">
+      <el-option value="" label="个人空间">
         <span class="ws-option">
           <el-icon><User /></el-icon>
           <span>个人空间</span>
@@ -45,9 +45,9 @@ const roleLabel = (role) => {
 }
 
 const handleSwitch = (workspaceId) => {
-  workspaceStore.switchWorkspace(workspaceId)
-  // 刷新当前页面数据
-  router.go(0)
+  // el-select 使用空字符串表示个人模式，转换为 null
+  const id = workspaceId === '' ? null : workspaceId
+  workspaceStore.switchWorkspace(id)
 }
 </script>
 

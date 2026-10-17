@@ -3,16 +3,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
-import { useUserStore } from './pinia/userStore'
-
-const userStore = useUserStore()
-
-onMounted(async () => {
-  if (userStore.token && !userStore.userInfo) {
-    await userStore.loadUserInfo()
-  }
-})
+// 认证初始化已在 main.js 中完成，无需重复调用
 </script>
 
 <style>

@@ -4,8 +4,10 @@ import json
 import asyncio
 import threading
 import pytz
+import redis
 from datetime import datetime
 from app.db.redis_client import get_redis
+from app.core.config import settings
 
 BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
@@ -63,6 +65,8 @@ class ConnectionManager:
                     dead.append(ws)
             for ws in dead:
                 self.disconnect(ws, user_id)
+        else:
+            print(f"[WS] User {user_id} not connected, message dropped")
 
     async def send_to_channel(self, channel: str, data: dict, user_ids: list[int] = None):
         """发送消息给订阅了指定频道的所有用户"""
@@ -79,9 +83,9 @@ manager = ConnectionManager()
 # ==================== Redis Pub/Sub 辅助 ====================
 
 def publish_im_message(conversation_id: int, message_data: dict):
-    """发布 IM 消息到 Redis — Redis 不可用时静默跳过"""
+    """发布 IM 消息到 Redis"""
     try:
-        get_redis().publish(
+        result = get_redis().publish(
             f"im:conversation:{conversation_id}",
             json.dumps({
                 "channel": "im",
@@ -89,8 +93,9 @@ def publish_im_message(conversation_id: int, message_data: dict):
                 "data": message_data
             })
         )
-    except Exception:
-        pass
+        print(f"[Redis] Published IM message to conv {conversation_id}, subscribers: {result}")
+    except Exception as e:
+        print(f"[Redis] Failed to publish IM message: {e}")
 
 
 def publish_notification(user_id: int, notification_data: dict):
@@ -101,7 +106,30 @@ def publish_notification(user_id: int, notification_data: dict):
             json.dumps({
                 "channel": "notification",
                 "type": "new_notification",
+                # 顶层必须带 user_id：订阅线程按 user_id 走 send_to_user 定向推送；
+                # 缺失时会掉进 send_to_channel("notification") 分支，而前端从不订阅该 channel → 推送被静默丢弃
+                "user_id": user_id,
                 "data": notification_data
+            })
+        )
+    except Exception:
+        pass
+
+
+def publish_read_status(conversation_id: int, reader_id: int, message_ids: list[int], member_ids: list[int]):
+    """发布已读状态到 Redis — 通知会话中其他成员"""
+    try:
+        get_redis().publish(
+            f"im:conversation:{conversation_id}",
+            json.dumps({
+                "channel": "im",
+                "type": "read_status",
+                "data": {
+                    "conversation_id": conversation_id,
+                    "reader_id": reader_id,
+                    "message_ids": message_ids,
+                },
+                "user_ids": [uid for uid in member_ids if uid != reader_id]
             })
         )
     except Exception:
@@ -139,23 +167,30 @@ CHANNELS = [
 
 
 def redis_subscriber():
-    """Redis 订阅者 — 多频道监听"""
-    redis_client = get_redis()
-    max_retries = 3
-
-    for attempt in range(max_retries):
-        if _shutdown_event.is_set():
-            break
+    """Redis 订阅者 — 多频道监听，带自动重连"""
+    while not _shutdown_event.is_set():
         try:
+            # 每次重连使用新的 Redis 连接（socket_timeout=None 让 listen 永久阻塞）
+            redis_client = redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_timeout=None,
+                socket_connect_timeout=5
+            )
+            redis_client.ping()
+            print(f"[Redis Subscriber] Connected to {settings.REDIS_URL}")
+
             pubsub = redis_client.pubsub()
-            # 订阅精确频道
             pubsub.subscribe("task_status_updates", "workspace_events")
-            # 订阅模式频道
             pubsub.psubscribe("im:conversation:*", "notification:user:*")
 
-            print("Redis subscriber started, listening on multiple channels...")
+            print("[Redis Subscriber] Listening on channels...")
 
-            for message in pubsub.listen():
+            # 使用 timeout 轮询，定期检查关闭信号和连接健康
+            while not _shutdown_event.is_set():
+                message = pubsub.get_message(timeout=1.0)
+                if message is None:
+                    continue
                 if _shutdown_event.is_set():
                     break
                 if message['type'] in ('message', 'pmessage'):
@@ -163,9 +198,18 @@ def redis_subscriber():
                         data = json.loads(message['data'])
                         channel_name = data.get("channel", "task")
                         user_id = data.get("user_id")
+                        msg_type = data.get("type", "unknown")
+                        print(f"[Redis] Received: channel={channel_name}, type={msg_type}")
 
                         if _loop:
-                            if user_id:
+                            user_ids = data.get("user_ids")
+                            if user_ids:
+                                # 多用户推送（如已读状态）
+                                for uid in user_ids:
+                                    asyncio.run_coroutine_threadsafe(
+                                        manager.send_to_user(uid, data), _loop
+                                    )
+                            elif user_id:
                                 asyncio.run_coroutine_threadsafe(
                                     manager.send_to_user(user_id, data), _loop
                                 )
@@ -178,31 +222,46 @@ def redis_subscriber():
 
             pubsub.close()
         except Exception as e:
-            print(f"Redis subscriber error (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1 and not _shutdown_event.is_set():
+            print(f"[Redis Subscriber] Error: {e}")
+            if not _shutdown_event.is_set():
+                print("[Redis Subscriber] Reconnecting in 5 seconds...")
                 _shutdown_event.wait(5)
-            else:
-                print("Redis subscriber failed. WebSocket features may be unavailable.")
 
 
 # ==================== WebSocket 端点 ====================
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str):
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
     """多通道 WebSocket 端点 — 支持 subscribe/unsubscribe"""
+    user_id = None
     try:
         from app.core.security import decode_token
+
+        # 从 query 参数提取 token（兼容中间件处理后的请求）
+        if not token:
+            token = websocket.query_params.get("token")
+
+        if not token:
+            print("WebSocket: missing token parameter")
+            await websocket.close(code=1008, reason="Missing token")
+            return
+
         payload = decode_token(token)
         if not payload:
+            print(f"WebSocket: invalid token")
             await websocket.close(code=1008, reason="Invalid token")
             return
 
         user_id = payload.get('user_id')
         if not user_id:
+            print(f"WebSocket: token has no user_id")
             await websocket.close(code=1008, reason="Invalid token")
             return
 
+        print(f"WebSocket: user {user_id} connecting")
+
         await manager.connect(websocket, user_id)
+        print(f"WebSocket: user {user_id} connected successfully")
         await manager.send_to_user(user_id, {
             "type": "connected",
             "message": "WebSocket connection established",

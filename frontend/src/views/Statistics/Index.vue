@@ -333,7 +333,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { statisticsApi } from '@/api/statistics'
@@ -420,6 +420,11 @@ const exportExcel = async () => {
 }
 
 onMounted(() => {
+  loadStatistics()
+})
+
+// 切换工作空间时重新加载
+watch(() => workspaceStore.currentWorkspaceId, () => {
   loadStatistics()
 })
 </script>

@@ -1,15 +1,19 @@
 """即时通讯模块 — API 路由"""
-from fastapi import APIRouter, Depends, Query
+import os
+import json
+import uuid
+from fastapi import APIRouter, Depends, Query, UploadFile, File as FastAPIFile
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.core.permissions import get_workspace_member
-from app.core.exceptions import BusinessError
+from app.core.exceptions import BusinessError, ResourceNotFoundError
 from app.models.user import User
 from app.modules.im.models import MessageType
 from app.modules.im.crud import conversation_crud, message_crud, read_crud
 from app.modules.im.schemas import ConversationCreate, MessageCreate, ReadMark, MemberAdd, MuteToggle
-from app.api.v1.websocket import publish_im_message
+from app.modules.im.storage import storage, is_image, ALLOWED_IMAGE_EXTENSIONS, IM_IMAGE_MAX_SIZE, IM_FILE_MAX_SIZE
+from app.api.v1.websocket import publish_im_message, publish_read_status
 
 router = APIRouter()
 
@@ -147,6 +151,7 @@ async def send_message(
         "msg_type": msg.msg_type.value,
         "content": msg.content,
         "reply_to_id": msg.reply_to_id,
+        "read_count": 0,  # 新消息默认未读
         "created_at": msg.created_at.isoformat() if msg.created_at else None,
     }
 
@@ -168,7 +173,25 @@ async def mark_read(
 ):
     """标记消息已读"""
     conversation_crud.get_member(db, conv_id, current_user.id)
+    # 获取需要标记的消息 ID 列表（用于 WebSocket 通知）
+    if body.message_ids:
+        marked_ids = body.message_ids
+    else:
+        from app.modules.im.models import Message
+        marked_ids = [m.id for m in db.query(Message.id).filter(
+            Message.conversation_id == conv_id,
+            Message.is_active == True
+        ).all()]
     count = read_crud.mark_read(db, conv_id, current_user.id, body.message_ids)
+    # 推送已读状态给会话其他成员
+    if count > 0 and marked_ids:
+        from app.modules.im.models import ConversationMember
+        members = db.query(ConversationMember.user_id).filter(
+            ConversationMember.conversation_id == conv_id,
+            ConversationMember.is_active == True
+        ).all()
+        member_ids = [m.user_id for m in members]
+        publish_read_status(conv_id, current_user.id, marked_ids, member_ids)
     return {"marked_count": count}
 
 
@@ -181,8 +204,95 @@ async def recall_message(
     current_user: User = Depends(get_current_user)
 ):
     """撤回消息（2分钟内）"""
-    message_crud.recall(db, msg_id, current_user.id)
+    msg = message_crud.recall(db, msg_id, current_user.id)
+
+    # 通过 WebSocket 推送撤回消息给会话其他成员
+    try:
+        recall_data = {
+            "id": msg.id,
+            "conversation_id": msg.conversation_id,
+            "sender_id": msg.sender_id,
+            "is_recalled": True,
+            "recalled_at": msg.recalled_at.isoformat() if msg.recalled_at else None,
+        }
+        publish_im_message(msg.conversation_id, recall_data)
+    except Exception:
+        pass
+
     return {"message": "消息已撤回"}
+
+
+# ==================== 文件上传 ====================
+
+@router.post("/upload")
+async def upload_im_file(
+    workspace_id: int = Query(None),
+    file: UploadFile = FastAPIFile(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """IM 文件上传接口 — 支持图片和普通文件"""
+    if not workspace_id:
+        raise BusinessError("缺少工作空间ID")
+    get_workspace_member(workspace_id, current_user.id, db)
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    content = await file.read()
+    await file.seek(0)
+
+    if is_image(ext):
+        max_size = IM_IMAGE_MAX_SIZE
+        msg_type = MessageType.IMAGE
+    else:
+        max_size = IM_FILE_MAX_SIZE
+        msg_type = MessageType.FILE
+
+    if len(content) > max_size:
+        size_mb = max_size // 1024 // 1024
+        raise BusinessError(f"文件大小不能超过 {size_mb}MB")
+
+    if ext and ext not in ALLOWED_IMAGE_EXTENSIONS and ext not in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.md', '.csv', '.zip', '.rar', '.mp4', '.mp3', '.json', '.xml', '.html', '.css', '.js', '.py'}:
+        raise BusinessError(f"不支持的文件类型: {ext}")
+
+    relative_path = f"im_{uuid.uuid4().hex}{ext}"
+    size = await storage.upload(file, workspace_id, relative_path)
+    file_url = storage.get_url(workspace_id, relative_path)
+
+    return {
+        "url": file_url,
+        "name": file.filename or "unknown",
+        "size": size,
+        "mime_type": file.content_type,
+        "msg_type": msg_type.value,
+    }
+
+
+# ==================== 文件访问（带权限校验） ====================
+
+@router.get("/files/{file_id}")
+async def get_im_file(
+    file_id: int,
+    workspace_id: int = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """获取IM上传的文件信息"""
+    if not workspace_id:
+        raise BusinessError("缺少工作空间ID")
+    get_workspace_member(workspace_id, current_user.id, db)
+
+    from app.modules.file.models import File
+    f = db.query(File).filter(File.id == file_id, File.is_active == True).first()
+    if not f:
+        raise ResourceNotFoundError(resource="文件")
+
+    return {
+        "id": f.id,
+        "name": f.name,
+        "size": f.size,
+        "mime_type": f.mime_type,
+        "url": storage.get_url(f.workspace_id, f.path),
+    }
 
 
 # ==================== 群管理 ====================

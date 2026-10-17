@@ -6,7 +6,7 @@ from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from app.core.config import settings
+from app.core.config import settings, get_jwt_secret
 from app.db.session import get_db
 from app.crud.user import user
 
@@ -27,13 +27,15 @@ def get_password_hash(password: str) -> str:
     return hashed.decode()
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, db: Session = None) -> str:
     """
     创建访问令牌 - 面试考点：JWT包含过期时间，避免令牌永久有效
     没过期时间 → 严重漏洞
     秘钥太简单 / 硬编码 → 漏洞
     JWT 放敏感信息 → 漏洞
     不用 HTTPS → Token 可被抓包
+    
+    JWT 密钥动态获取（方案 A：首次启动自动生成持久化到 system_config 表）
     """
     to_encode = data.copy()
     if expires_delta:
@@ -42,11 +44,12 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    secret = get_jwt_secret(db)
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 
-def create_refresh_token(data: dict) -> str:
+def create_refresh_token(data: dict, db: Session = None) -> str:
     """
     创建刷新令牌 - 面试考点：刷新令牌有效期更长，用于获取新的访问令牌
     1. Refresh Token 为什么有效期更长？
@@ -69,15 +72,20 @@ def create_refresh_token(data: dict) -> str:
     """
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode = data.copy()
-    to_encode.update({"exp": expire, "type": "refresh"})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    # jti 唯一标识：同秒内生成的 refresh token 也必须不同，
+    # 否则 payload 完全一致 → 签名一致 → 轮转发出"相同 token"，重用检测失效
+    import secrets as _secrets
+    to_encode.update({"exp": expire, "type": "refresh", "jti": _secrets.token_hex(8)})
+    secret = get_jwt_secret(db)
+    encoded_jwt = jwt.encode(to_encode, secret, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 
-def decode_token(token: str) -> Optional[dict]:
+def decode_token(token: str, db: Session = None) -> Optional[dict]:
     """解码令牌 - 面试考点：处理JWTError异常，验证令牌有效性"""
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        secret = get_jwt_secret(db)
+        payload = jwt.decode(token, secret, algorithms=[settings.ALGORITHM])
         return payload
     except JWTError:
         return None
@@ -94,8 +102,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # 解码令牌
-    payload = decode_token(token)
+    # 解码令牌（传 db → 动态读 system_config 表；不传 → 兜底）
+    payload = decode_token(token, db=db)
     if payload is None:
         raise credentials_exception
 

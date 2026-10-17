@@ -255,6 +255,7 @@ class ApprovalEngine:
         node.status = NodeStatus.APPROVED
         node.comment = comment
         node.acted_at = get_beijing_time().isoformat()
+        db.flush()  # 确保状态变更对后续查询可见（autoflush=False）
 
         # 检查同节点是否有其他人未审批
         pending_same_sort = db.query(ApprovalNode).filter(

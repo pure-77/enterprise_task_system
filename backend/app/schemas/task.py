@@ -12,7 +12,7 @@ class TaskBase(BaseModel):
     description: Optional[str] = Field(None, description="任务描述")
     due_date: Optional[datetime] = Field(None, description="截止日期")
     priority: TaskPriority = Field(TaskPriority.MEDIUM, description="任务优先级")
-    category_id: int = Field(..., description="分类ID")
+    category_id: Optional[int] = Field(None, description="分类ID（可选）")
     tags: Optional[List[int]] = Field(None, description="标签ID列表")
     workspace_id: Optional[int] = Field(None, description="工作空间ID（NULL=个人任务）")
     assignee_id: Optional[int] = Field(None, description="指派给谁（单人）")
@@ -50,7 +50,7 @@ class TagResponse(BaseModel):
 
 
 class CompletionUser(BaseModel):
-    """完成记录中的用户信息"""
+    """完成记录中的用户信息 — nickname 由 API 层从 TaskCompletion.user 注入"""
     user_id: int
     nickname: Optional[str] = None
     completed_at: Optional[datetime] = None

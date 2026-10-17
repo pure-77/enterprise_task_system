@@ -46,8 +46,9 @@ class WorkspaceMember(BaseModel):
 
     workspace = relationship("Workspace", back_populates="members")
     user = relationship("User", backref="workspace_memberships", foreign_keys=[user_id])
-    department = relationship("Department", foreign_keys=[department_id], backref="members")
-    position = relationship("Position", foreign_keys=[position_id], backref="members")
+    # department/position relationship 注释掉，org router 里手动查（避免跨模块 mapper 初始化顺序问题）
+    # department = relationship("Department", foreign_keys=[department_id])
+    # position = relationship("Position", foreign_keys=[position_id])
 
 
 class WorkspaceInvitation(BaseModel):

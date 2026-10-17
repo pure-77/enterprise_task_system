@@ -1,6 +1,6 @@
 """组织架构模块 — API 路由"""
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.db.session import get_db
 from app.core.security import get_current_user
 from app.core.permissions import get_workspace_member
@@ -8,6 +8,7 @@ from app.core.exceptions import ResourceNotFoundError, PermissionDeniedError
 from app.models.workspace import WorkspaceRole, WorkspaceMember
 from app.models.user import User
 from app.modules.org.crud import department_crud, position_crud
+from app.modules.org.models import Department
 from app.modules.org.schemas import (
     DepartmentCreate, DepartmentUpdate,
     PositionCreate, PositionUpdate, PositionResponse,
@@ -166,13 +167,32 @@ async def get_members(
     """获取成员花名册"""
     get_workspace_member(workspace_id, current_user.id, db)
 
-    query = db.query(WorkspaceMember).filter(
+    # 只 joinedload user（department/position relationship 在 WorkspaceMember 上未定义）
+    query = db.query(WorkspaceMember).options(
+        joinedload(WorkspaceMember.user),
+    ).filter(
         WorkspaceMember.workspace_id == workspace_id,
         WorkspaceMember.is_active == True
     )
 
     if department_id:
-        query = query.filter(WorkspaceMember.department_id == department_id)
+        # 使用物化路径递归：查询该部门及其所有子部门的成员
+        dept = db.query(Department).filter(
+            Department.id == department_id,
+            Department.is_active == True
+        ).first()
+        if dept:
+            dept_path = dept.path or f"/{dept.id}"
+            # 查找 path 以 dept_path 开头的所有部门 ID
+            child_dept_ids = [
+                d.id for d in db.query(Department.id).filter(
+                    Department.workspace_id == workspace_id,
+                    Department.path.like(f"{dept_path}/%"),
+                    Department.is_active == True
+                ).all()
+            ]
+            all_dept_ids = [department_id] + child_dept_ids
+            query = query.filter(WorkspaceMember.department_id.in_(all_dept_ids))
     if status:
         query = query.filter(WorkspaceMember.status == status)
     if keyword:
@@ -184,6 +204,18 @@ async def get_members(
     total = query.count()
     members = query.offset((page - 1) * page_size).limit(page_size).all()
 
+    # 批量查询部门/职位名称（避免 N+1）
+    dept_ids = list({m.department_id for m in members if m.department_id})
+    pos_ids = list({m.position_id for m in members if m.position_id})
+    dept_map = {}
+    pos_map = {}
+    if dept_ids:
+        for d in db.query(Department).filter(Department.id.in_(dept_ids)).all():
+            dept_map[d.id] = d.name
+    if pos_ids:
+        for p in db.query(Position).filter(Position.id.in_(pos_ids)).all():
+            pos_map[p.id] = p.name
+
     items = []
     for m in members:
         item = MemberResponse.model_validate(m)
@@ -191,10 +223,10 @@ async def get_members(
             item.email = m.user.email
             item.nickname = m.user.nickname
             item.avatar = m.user.avatar
-        if m.department:
-            item.department_name = m.department.name
-        if m.position:
-            item.position_name = m.position.name
+        if m.department_id and m.department_id in dept_map:
+            item.department_name = dept_map[m.department_id]
+        if m.position_id and m.position_id in pos_map:
+            item.position_name = pos_map[m.position_id]
         items.append(item.model_dump())
 
     return {

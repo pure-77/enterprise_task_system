@@ -59,7 +59,10 @@ export const useCategoryStore = defineStore('category', {
 
     async updateCategory(id, data) {
       try {
-        const updatedCategory = await categoryApi.updateCategory(id, data)
+        const updatedCategory = await categoryApi.updateCategory(id, {
+          ...data,
+          ...this._getWorkspaceParam()
+        })
         const index = this.categories.findIndex(c => c.id === id)
         if (index !== -1) this.categories[index] = updatedCategory
         ElMessage.success('分类更新成功')
@@ -73,7 +76,7 @@ export const useCategoryStore = defineStore('category', {
 
     async deleteCategory(id, moveToCategoryId) {
       try {
-        await categoryApi.deleteCategory(id, moveToCategoryId)
+        await categoryApi.deleteCategory(id, moveToCategoryId, this._getWorkspaceParam().workspace_id)
         this.categories = this.categories.filter(c => c.id !== id)
         ElMessage.success('分类删除成功')
         return true

@@ -4,8 +4,9 @@ from pathlib import Path
 from fastapi import UploadFile
 from app.core.exceptions import BusinessError
 
+# 存储目录：backend/uploads/files/（与 main.py 中的静态文件挂载一致）
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "uploads", "files")
+    os.path.dirname(os.path.abspath(__file__))))), "uploads", "files")
 
 # 文件大小限制: 100MB
 MAX_FILE_SIZE = 100 * 1024 * 1024

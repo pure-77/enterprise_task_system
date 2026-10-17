@@ -159,7 +159,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, Calendar, Money, Position, Clock, Document, DocumentChecked, EditPen } from '@element-plus/icons-vue'
 import { approvalApi } from '@/api/approval'
@@ -283,6 +283,9 @@ async function doSubmit() {
 }
 
 onMounted(() => load())
+
+// 切换工作空间时重新加载
+watch(() => wsStore.currentWorkspaceId, () => load())
 </script>
 <style scoped>
 .page { padding: 0; }

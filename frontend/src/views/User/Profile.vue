@@ -297,7 +297,7 @@
                 :before-upload="beforeAvatarUpload"
                 :http-request="customUploadAvatar"
               >
-                <img v-if="userForm.avatar" :src="userForm.avatar" class="avatar" />
+                <img v-if="userForm.avatar" :src="appendToken(userForm.avatar)" class="avatar" />
                 <el-icon v-else class="avatar-uploader-icon"><Plus /></el-icon>
               </el-upload>
             </el-form-item>
@@ -372,6 +372,7 @@ import { ElMessage } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import { useUserStore } from '@/pinia/userStore'
 import { profileApi } from '@/api/profile'
+import { appendToken } from '@/utils/auth'
 import request from '@/api/request'
 
 // 状态管理

@@ -18,8 +18,10 @@ async def create_category(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """创建分类 - 面试考点：用户认证，关联用户ID"""
-    db_category = category.create(db, category_in, current_user.id, workspace_id)
+    """创建分类 — workspace_id 优先从 body 读取（前端 POST JSON），query param 作兼容"""
+    # 优先 body 里的，其次 query param
+    effective_ws_id = category_in.workspace_id if category_in.workspace_id is not None else workspace_id
+    db_category = category.create(db, category_in, current_user.id, effective_ws_id)
     cache_service.delete_user_categories(current_user.id)
     return db_category
 

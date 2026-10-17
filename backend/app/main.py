@@ -8,6 +8,17 @@ from app.core.celery_config import celery_app
 from app.api.v1.websocket import start_redis_subscriber
 from app.middleware.response_handler import ResponseHandlerMiddleware
 from app.middleware.audit_log import AuditLogMiddleware
+from app.middleware.static_auth import StaticAuthMiddleware
+import logging
+
+# 配置日志：缓存相关日志输出到控制台，方便排查
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+# 缓存模块单独设置 INFO 级别
+logging.getLogger("cache").setLevel(logging.INFO)
 
 # 创建FastAPI应用实例 - 面试考点：应用配置和元数据
 app = FastAPI(
@@ -22,6 +33,8 @@ app = FastAPI(
 app.add_middleware(ResponseHandlerMiddleware)
 # 审计日志中间件
 app.add_middleware(AuditLogMiddleware)
+# 静态文件认证中间件 — 保护 /uploads 路径
+app.add_middleware(StaticAuthMiddleware)
 
 # 配置CORS中间件 — 必须最后添加（最外层），确保异常响应也携带 CORS 头
 app.add_middleware(
@@ -42,6 +55,7 @@ from app.modules.calendar.router import router as calendar_router
 from app.modules.attendance.router import router as attendance_router
 from app.modules.announcement.router import router as announcement_router
 from app.modules.file.router import router as file_router
+from app.modules.agent.router import router as agent_router
 
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(task_router, prefix="/api/v1")
@@ -53,6 +67,8 @@ app.include_router(calendar_router, prefix="/api/v1/calendar")
 app.include_router(attendance_router, prefix="/api/v1/attendance")
 app.include_router(announcement_router, prefix="/api/v1/announcements")
 app.include_router(file_router, prefix="/api/v1/files")
+# Agent 路由 — 企业办公智能助手
+app.include_router(agent_router, prefix="/api/v1/agent")
 
 # 挂载静态文件服务 - 用于提供头像等静态文件
 import os
@@ -68,6 +84,9 @@ async def startup_event():
     init_db()
     # 启动 Redis 订阅者
     start_redis_subscriber()
+    # 初始化 Agent 工具注册
+    from app.modules.agent.tools import register_all_tools
+    register_all_tools()
 
 
 @app.on_event("shutdown")

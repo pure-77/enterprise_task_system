@@ -29,7 +29,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { announcementApi } from '@/api/announcement'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
@@ -54,6 +54,9 @@ async function doCreate() {
 
 function openCreate() { f.value = { title: '', content: '', type: 'notice', is_pinned: false, is_must_read: false }; showCreate.value = true }
 onMounted(() => load())
+
+// 切换工作空间时重新加载
+watch(() => wsStore.currentWorkspaceId, () => load())
 </script>
 <style scoped>
 .page { padding: 0; } .page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; } .page-head h2 { font-size: 22px; font-weight: 700; }

@@ -17,6 +17,10 @@ export default defineConfig({
         target: 'http://localhost:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
+      },
+      '/uploads': {
+        target: 'http://localhost:8001',
+        changeOrigin: true
       }
     }
   },
@@ -29,6 +33,19 @@ export default defineConfig({
       compress: {
         drop_console: true,
         drop_debugger: true
+      }
+    },
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Vue 核心
+          'vue-core': ['vue', 'vue-router', 'pinia'],
+          // Element Plus 组件库
+          'element-plus': ['element-plus', '@element-plus/icons-vue'],
+          // 图表库
+          'echarts': ['echarts'],
+        }
       }
     }
   }

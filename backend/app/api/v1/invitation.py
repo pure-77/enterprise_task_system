@@ -6,6 +6,7 @@ from app.crud.workspace import workspace_invitation, workspace_member, workspace
 from app.models.workspace import InvitationStatus
 from app.crud.user import user as user_crud
 from app.api.v1.task import get_current_user_id
+from app.services.cache_service import CacheService
 
 router = APIRouter()
 
@@ -51,6 +52,7 @@ def accept_invitation(
     workspace_member.add_member(db, inv.workspace_id, user_id, inv.role)
     workspace_activity.add(db, inv.workspace_id, user_id, "member_joined", "member",
                            user_id, '{"role": "' + inv.role.value + '"}')
+    CacheService.set_member_permission(inv.workspace_id, user_id, inv.role.value)
     return {"message": "已加入空间"}
 
 

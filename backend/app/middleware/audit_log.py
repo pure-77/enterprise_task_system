@@ -10,6 +10,9 @@ SKIP_PREFIXES = ["/docs", "/redoc", "/openapi.json", "/health", "/uploads", "/st
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # WebSocket 请求直接放行
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
         start_time = time.time()
         response = await call_next(request)
 

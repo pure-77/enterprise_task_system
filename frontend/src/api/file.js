@@ -1,5 +1,7 @@
 import request from './request'
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
+
 export const fileApi = {
   getFolders: (workspaceId, parentId) => request.get('/files/folders', { params: { workspace_id: workspaceId, parent_id: parentId } }),
   createFolder: (data) => request.post('/files/folders', data),
@@ -12,4 +14,8 @@ export const fileApi = {
   },
   deleteFile: (id) => request.delete(`/files/${id}`),
   moveFile: (id, data) => request.put(`/files/${id}/move`, data),
+  getDownloadUrl: (id, mode = 'inline') => `${API_BASE_URL}/files/${id}/download?mode=${mode}`,
+  getSignedUrl: (id) => request.get(`/files/${id}/signed-url`),
+  getPreviewPdfUrl: (id) => `${API_BASE_URL}/files/${id}/preview-pdf`,
+  getTencentPreviewUrl: (id) => request.get(`/files/${id}/preview-tencent`),
 }

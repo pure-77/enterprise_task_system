@@ -36,8 +36,8 @@
         </el-descriptions-item>
       </el-descriptions>
       
-      <!-- 团队任务完成进度 -->
-      <div class="completion-section" v-if="task.is_team_wide">
+      <!-- 团队任务完成进度（team_wide 或 多人 assignees） -->
+      <div class="completion-section" v-if="task.is_team_wide || task.assignee_nicknames?.length > 0">
         <el-divider />
         <h4>完成进度</h4>
         <div class="completion-progress">
@@ -60,9 +60,20 @@
           </el-tag>
         </div>
         <div class="completion-actions" style="margin-top: 12px">
-          <el-button type="success" @click="markComplete" :loading="completing">
+          <el-button
+            v-if="canShowMarkComplete"
+            type="success"
+            @click="markComplete"
+            :loading="completing"
+          >
             我完成了
           </el-button>
+          <span v-else-if="task.completed_count === task.total_members && task.total_members > 0" style="color: var(--el-color-success); font-size: 13px">
+            ✓ 所有人已完成
+          </span>
+          <span v-else-if="alreadyMarked" style="color: var(--el-color-info); font-size: 13px">
+            ✓ 你已标记完成
+          </span>
         </div>
       </div>
 
@@ -75,16 +86,18 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { taskApi } from '@/api/task'
 import { formatTime } from '@/utils/format'
+import { useUserStore } from '@/pinia/userStore'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const completing = ref(false)
+const userStore = useUserStore()
 
 const task = ref({
   id: '',
@@ -96,6 +109,29 @@ const task = ref({
   description: '',
   created_at: '',
   updated_at: ''
+})
+
+// 当前用户是否已标记完成
+const alreadyMarked = computed(() => {
+  const uid = userStore.getUserId
+  return task.value.completions?.some(c => c.user_id === uid)
+})
+
+// "我完成了"按钮是否对当前用户可见
+const canShowMarkComplete = computed(() => {
+  const t = task.value
+  // 不是多人追踪任务 → 不显示
+  if (!t.is_team_wide && !(t.assignee_nicknames?.length > 0)) return false
+  // 已经所有人都完成了 → 不显示
+  if (t.completed_count === t.total_members && t.total_members > 0) return false
+  // 自己已经标记过 → 不显示
+  if (alreadyMarked.value) return false
+  // 多人 assignees（非 team_wide）：只有被分配到的人能点
+  if (!t.is_team_wide && t.assignee_nicknames?.length > 0) {
+    const nick = userStore.getNickname
+    if (!nick || !t.assignee_nicknames.includes(nick)) return false
+  }
+  return true
 })
 
 const getStatusType = (status) => {

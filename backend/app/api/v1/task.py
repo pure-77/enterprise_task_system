@@ -20,9 +20,19 @@ from app.models.task import TaskStatus, TaskPriority
 from app.core.security import decode_token
 from fastapi import Header
 from app.db.redis_client import get_redis
+from app.services.cache_service import CacheService
 import json
 
 router = APIRouter()
+
+
+def _invalidate_task_caches(user_id: int, task_id: int = None, workspace_id: int = None):
+    """任务变更后失效相关缓存"""
+    if task_id:
+        CacheService.delete_task_detail(task_id)
+    CacheService.invalidate_user_stats(user_id)
+    CacheService.delete_user_tasks(user_id)
+    CacheService.delete_user_categories(user_id)
 
 
 def get_current_user_id(authorization: str = Header(None, alias="Authorization")) -> int:
@@ -67,16 +77,43 @@ def get_current_user_id(authorization: str = Header(None, alias="Authorization")
 
 
 def publish_task_status_update(user_id: int, task_id: int, status: str):
-    """发布任务状态更新到 Redis（Redis 不可用时静默跳过）"""
+    """发布任务状态更新：1) Redis Pub/Sub 实时推送 2) Celery 异步写入通知中心"""
     try:
+        msg_type = "task_assigned" if status == "assigned" else "task_status_update"
         message = {
-            "type": "task_status_update",
+            "type": msg_type,
             "user_id": user_id,
             "task_id": task_id,
             "status": status,
             "timestamp": get_beijing_time_str()
         }
         get_redis().publish('task_status_updates', json.dumps(message))
+    except Exception:
+        pass
+
+    # 异步写入通知中心（不阻塞请求）
+    try:
+        from app.tasks.notification_tasks import push_notification_to_user
+        if status == "assigned":
+            title = "新任务分配"
+            content = f"有新任务分配给你（任务 ID {task_id}），请及时处理"
+        else:
+            status_map = {
+                "pending": "待处理", "in_progress": "进行中", "completed": "已完成",
+                "overdue": "已逾期", "deleted": "已删除", "cancelled": "已取消"
+            }
+            title = f"任务状态变更：{status_map.get(status, status)}"
+            content = f"任务 ID {task_id} 状态已更新为「{status_map.get(status, status)}」"
+
+        if status not in ("deleted", "cancelled"):
+            push_notification_to_user.delay(
+                user_id,
+                "task",
+                title,
+                content,
+                "task",
+                task_id
+            )
     except Exception:
         pass
 
@@ -126,12 +163,23 @@ async def create_task(
     db_task = task_crud.create(db, task_in, user_id)
     publish_task_status_update(user_id, db_task.id, db_task.status)
 
+    # 🐛 FIX: 同时通知被分配人（assignee_id）
+    # 原逻辑只通知创建者 assignee 其他人收不到
+    notified = set([user_id])
+    if task_in.assignee_id and task_in.assignee_id not in notified:
+        publish_task_status_update(task_in.assignee_id, db_task.id, "assigned")
+        notified.add(task_in.assignee_id)
+    if task_in.assignee_ids:
+        for aid in task_in.assignee_ids:
+            if aid not in notified:
+                publish_task_status_update(aid, db_task.id, "assigned")
+                notified.add(aid)
+
     from app.crud.workspace import workspace_activity
     if task_in.workspace_id:
         workspace_activity.add(db, task_in.workspace_id, user_id, "task_created", "task", db_task.id)
 
-    from app.services.cache_service import cache_service
-    cache_service.delete_user_tasks(user_id)
+    _invalidate_task_caches(user_id, db_task.id, task_in.workspace_id)
 
     return db_task
 
@@ -193,12 +241,26 @@ async def get_task(
     if not db_task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
-    # 团队公开任务 → 注入完成追踪数据
-    if db_task.is_team_wide and db_task.workspace_id:
-        db_task._total_members_cache = db.query(WorkspaceMember).filter(
-            WorkspaceMember.workspace_id == db_task.workspace_id,
-            WorkspaceMember.is_active == True
-        ).count()
+    # 团队空间里的所有任务都注入完成追踪数据，便于前端显示进度
+    # team_wide → workspace 全员参与；非 team_wide → assignees 列表（单人或多人）
+    needs_tracking = db_task.workspace_id is not None
+    if needs_tracking and db_task.workspace_id:
+        if db_task.is_team_wide:
+            # team_wide：目标是 workspace 所有活跃成员
+            db_task._total_members_cache = db.query(WorkspaceMember).filter(
+                WorkspaceMember.workspace_id == db_task.workspace_id,
+                WorkspaceMember.is_active == True
+            ).count()
+        else:
+            # 非 team_wide：目标是被分配人数量（单人也算）
+            db_task._total_members_cache = len(db_task.assignees or [])
+
+    # 给 completions 注入 nickname（TaskCompletion ORM 没有直接的 nickname 字段）
+    for c in (db_task.completions or []):
+        if not hasattr(c, 'nickname') or c.nickname is None:
+            user_obj = getattr(c, 'user', None)
+            if user_obj:
+                object.__setattr__(c, 'nickname', user_obj.nickname or user_obj.email)
 
     return db_task
 
@@ -241,12 +303,13 @@ async def update_task(
     else:
         # 非公开团队任务
         member = get_workspace_member(db_task.workspace_id, user_id, db)
-        if member.role in [WorkspaceRole.OWNER, WorkspaceRole.ADMIN] or db_task.user_id == user_id:
+        # 规则：Owner/Admin 可改所有；被分配人可改；创建者如果没分配给自己不能改
+        if member.role in [WorkspaceRole.OWNER, WorkspaceRole.ADMIN]:
             can_edit_all = True
         elif db_task.assignee_id == user_id:
-            can_edit_all = True  # 被分配人可编辑全部字段
+            can_edit_all = True  # 单人分配给自己
         elif any(a.id == user_id for a in db_task.assignees):
-            can_edit_all = True  # 多人分配中的被分配人也可编辑全部
+            can_edit_all = True  # 多人分配中包含自己
 
     if not can_edit_all:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你没有编辑此任务的权限")
@@ -271,8 +334,7 @@ async def update_task(
             workspace_activity.add(db, db_task.workspace_id, user_id, "task_status_changed", "task", task_id,
                                    '{"from": "' + old_status.value + '", "to": "' + updated_task.status.value + '"}')
 
-    from app.services.cache_service import cache_service
-    cache_service.delete_user_tasks(user_id)
+    _invalidate_task_caches(user_id, task_id, db_task.workspace_id)
 
     return updated_task
 
@@ -314,8 +376,7 @@ async def delete_task(
 
     publish_task_status_update(user_id, task_id, "deleted")
 
-    from app.services.cache_service import cache_service
-    cache_service.delete_user_tasks(user_id)
+    _invalidate_task_caches(user_id, task_id)
 
     return {"message": "任务删除成功"}
 
@@ -327,27 +388,81 @@ async def update_task_status(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    """更新任务状态接口
-    - 团队公开任务：只有 OWNER/ADMIN 可以标记为 completed
-    - 其他状态（in_progress/cancelled/pending）：创建者/被分配人/任何成员可操作
+    """更新任务状态接口 — 权限规则同 PUT /tasks/{id}：
+    - 个人任务：仅创建者
+    - 团队公开（is_team_wide）：任何成员可改；标记 completed 仅 Owner/Admin
+    - 非公开团队任务：Owner/Admin 可改所有；被分配人（单人/多人）可改；创建者没分配给自己不能改
     """
     from app.models.workspace import WorkspaceRole, WorkspaceMember
+    from app.core.permissions import get_workspace_member
 
     db_task = task_crud.get_task_with_permission(db, task_id, user_id)
     if not db_task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
-    # 团队公开任务 → completed 仅 OWNER/ADMIN 可操作
-    if db_task.is_team_wide and status_update.status == TaskStatus.COMPLETED:
+    # --- 修改权限校验（与 PUT /tasks/{id} 保持一致）---
+    can_edit_status = False
+    if db_task.workspace_id is None:
+        # 个人任务：仅创建者
+        if db_task.user_id == user_id:
+            can_edit_status = True
+    elif db_task.is_team_wide:
+        # 团队公开：任何 workspace 成员可改
         member = db.query(WorkspaceMember).filter(
             WorkspaceMember.workspace_id == db_task.workspace_id,
             WorkspaceMember.user_id == user_id,
             WorkspaceMember.is_active == True
         ).first()
-        if not member or member.role not in [WorkspaceRole.OWNER, WorkspaceRole.ADMIN]:
+        if member:
+            can_edit_status = True
+    else:
+        # 非公开团队任务
+        member = get_workspace_member(db_task.workspace_id, user_id, db)
+        if member.role in [WorkspaceRole.OWNER, WorkspaceRole.ADMIN]:
+            can_edit_status = True
+        elif db_task.assignee_id == user_id:
+            can_edit_status = True  # 单人分配给自己
+        elif any(a.id == user_id for a in db_task.assignees):
+            can_edit_status = True  # 多人分配中包含自己
+
+    if not can_edit_status:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="仅任务创建者、Owner/Admin 或被分配人可修改状态"
+        )
+
+    # 多人追踪任务：禁止直接把 status 设为 completed，必须所有人都先 POST /complete
+    # 无论 Owner/Admin 还是被分配人，都不能绕过"逐个标记"流程
+    # 只要是 workspace 里的任务（有 workspace_id）都需要追踪
+    needs_tracking = db_task.workspace_id is not None
+    if needs_tracking and status_update.status == TaskStatus.COMPLETED:
+        from app.models.task_completion import TaskCompletion
+        from app.models.workspace import WorkspaceMember
+
+        all_done = False
+        if db_task.is_team_wide and db_task.workspace_id:
+            target_count = db.query(WorkspaceMember).filter(
+                WorkspaceMember.workspace_id == db_task.workspace_id,
+                WorkspaceMember.is_active == True
+            ).count()
+            done_count = db.query(TaskCompletion).filter(
+                TaskCompletion.task_id == task_id,
+                TaskCompletion.is_active == True
+            ).count()
+            all_done = target_count > 0 and done_count >= target_count
+        else:
+            target_ids = {a.id for a in (db_task.assignees or [])}
+            if target_ids:
+                done_ids = {c.user_id for c in db_task.completions}
+                all_done = target_ids.issubset(done_ids)
+            else:
+                # 没有 assignees 的 workspace 任务 → 视为单人创建，不阻塞
+                all_done = True
+
+        if not all_done:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="需要全部成员完成后，由管理员标记为已完成"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="还有成员未标记完成，无法将任务标记为已完成。请使用「我完成了」按钮逐个标记。"
             )
 
     old_status = db_task.status
@@ -357,8 +472,7 @@ async def update_task_status(
     if updated_task.status != old_status:
         publish_task_status_update(user_id, updated_task.id, updated_task.status)
 
-    from app.services.cache_service import cache_service
-    cache_service.delete_user_tasks(user_id)
+    _invalidate_task_caches(user_id, task_id, db_task.workspace_id)
 
     return updated_task
 
@@ -369,9 +483,11 @@ async def complete_team_task(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    """成员标记自己完成了团队公开任务
-    - 仅 is_team_wide=True 的任务可用
+    """成员标记自己完成了多人协作任务
+    - is_team_wide=True：workspace 任何活跃成员都可标记
+    - 多人 assignees：只有被分配到的人可标记
     - 每个成员只能标记一次（不可重复）
+    - 所有人都标记完成后自动把任务 status 改成 COMPLETED
     """
     from app.models.workspace import WorkspaceMember
     from app.models.task_completion import TaskCompletion
@@ -380,8 +496,17 @@ async def complete_team_task(
     if not db_task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
 
-    if not db_task.is_team_wide:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="只有团队公开任务支持此操作")
+    # 判断类型：团队空间里的所有任务（有 workspace_id）都需要追踪完成
+    # team_wide → workspace 全员参与
+    # 非 team_wide → 被分配人参与（单人/多人 assignees）
+    needs_tracking = db_task.workspace_id is not None
+    if not needs_tracking:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="个人任务不需要多人完成标记")
+
+    # 多人 assignees 任务：只有被分配到的人可以标记
+    if not db_task.is_team_wide and db_task.assignees:
+        if user_id not in (a.id for a in db_task.assignees):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你不是被分配人，无需标记")
 
     # 检查是否已完成过
     existing = db.query(TaskCompletion).filter(
@@ -394,12 +519,37 @@ async def complete_team_task(
 
     completion = TaskCompletion(task_id=task_id, user_id=user_id)
     db.add(completion)
+    db.flush()  # 刷新以便后续查询 completions
+
+    # 自动推进：判断是否所有目标人都完成了
+    all_done = False
+    if db_task.is_team_wide and db_task.workspace_id:
+        # team_wide：目标是 workspace 所有活跃成员
+        target_count = db.query(WorkspaceMember).filter(
+            WorkspaceMember.workspace_id == db_task.workspace_id,
+            WorkspaceMember.is_active == True
+        ).count()
+        done_count = db.query(TaskCompletion).filter(
+            TaskCompletion.task_id == task_id,
+            TaskCompletion.is_active == True
+        ).count()
+        all_done = target_count > 0 and done_count >= target_count
+    else:
+        # 非 team_wide：目标是所有被分配人（单人或多人 assignees 列表）
+        target_ids = {a.id for a in (db_task.assignees or [])}
+        if target_ids:
+            done_ids = {c.user_id for c in db_task.completions}
+            all_done = target_ids.issubset(done_ids)
+
+    if all_done and db_task.status != TaskStatus.COMPLETED:
+        db_task.status = TaskStatus.COMPLETED
+
     db.commit()
 
     from app.services.cache_service import cache_service
     cache_service.delete_user_tasks(user_id)
 
-    return {"message": "已完成标记", "task_id": task_id, "user_id": user_id}
+    return {"message": "已完成标记", "task_id": task_id, "user_id": user_id, "all_done": all_done}
 
 
 @router.post("/batch/update")
@@ -429,8 +579,9 @@ async def batch_update_tasks(
         for task_id in batch_update.task_ids:
             publish_task_status_update(user_id, task_id, batch_update.status)
 
-    from app.services.cache_service import cache_service
-    cache_service.delete_user_tasks(user_id)
+    for task_id in batch_update.task_ids:
+        CacheService.delete_task_detail(task_id)
+    _invalidate_task_caches(user_id)
 
     return {"message": f"成功更新{count}个任务", "count": count}
 
@@ -451,8 +602,7 @@ async def batch_delete_tasks(
 
     for task_id in task_ids:
         publish_task_status_update(user_id, task_id, "deleted")
-
-    from app.services.cache_service import cache_service
-    cache_service.delete_user_tasks(user_id)
+        CacheService.delete_task_detail(task_id)
+    _invalidate_task_caches(user_id)
 
     return {"message": f"成功删除{count}个任务", "count": count}

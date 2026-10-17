@@ -2,7 +2,7 @@
   <div class="page">
     <div class="page-head">
       <h2>考勤打卡</h2>
-      <el-button v-if="isAdmin" type="primary" plain size="small" @click="showRuleMgr = true">
+      <el-button v-if="isAdmin" type="primary" plain size="small" class="rule-mgr-btn" @click="showRuleMgr = true">
         <el-icon><Setting /></el-icon> 规则管理
       </el-button>
     </div>
@@ -37,7 +37,7 @@
           <div class="status-item">
             <div class="status-label">签到</div>
             <div :class="['status-badge', today.checked_in ? 'done' : '']">
-              {{ today.checked_in ? today.check_in_time?.slice(0,5) : '未签到' }}
+              {{ today.checked_in ? formatTimeShort(today.check_in_time) : '未签到' }}
             </div>
             <div v-if="today.check_in_type" class="status-judge">
               <el-tag :type="today.check_in_type === 'normal' ? 'success' : 'danger'" size="small">
@@ -49,7 +49,7 @@
           <div class="status-item">
             <div class="status-label">签退</div>
             <div :class="['status-badge', today.checked_out ? 'done' : '']">
-              {{ today.checked_out ? today.check_out_time?.slice(0,5) : '未签退' }}
+              {{ today.checked_out ? formatTimeShort(today.check_out_time) : '未签退' }}
             </div>
             <div v-if="today.check_out_type" class="status-judge">
               <el-tag :type="today.check_out_type === 'normal' ? 'success' : 'warning'" size="small">
@@ -84,9 +84,13 @@
     <el-card v-if="activeRule" style="margin-top:20px">
       <h4 style="margin-bottom:12px">打卡记录</h4>
       <el-table :data="records" stripe size="small">
-        <el-table-column prop="date" label="日期" width="120" />
-        <el-table-column prop="check_in_time" label="签到" width="100" />
-        <el-table-column prop="check_out_time" label="签退" width="100" />
+        <el-table-column prop="date" label="日期" width="120" :formatter="(r) => formatDateOnly(r.date)" />
+        <el-table-column label="签到" width="100">
+          <template #default="{row}">{{ formatTimeShort(row.check_in_time) }}</template>
+        </el-table-column>
+        <el-table-column label="签退" width="100">
+          <template #default="{row}">{{ formatTimeShort(row.check_out_time) }}</template>
+        </el-table-column>
         <el-table-column label="签到判定" width="90">
           <template #default="{row}">
             <el-tag v-if="row.check_in_type" :type="row.check_in_type==='normal'?'success':'danger'" size="small">
@@ -155,11 +159,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting, Clock, CircleCheck } from '@element-plus/icons-vue'
 import { attendanceApi } from '@/api/attendance'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
+import { formatTimeShort, formatDateOnly } from '@/utils/format'
 const wsStore = useWorkspaceStore()
 
 const isAdmin = computed(() => ['owner', 'admin'].includes(wsStore.currentRole))
@@ -325,11 +330,18 @@ onMounted(async () => {
   await loadRules()
   if (activeRule.value) loadAll()
 })
+
+// 切换工作空间时重新加载
+watch(() => wsStore.currentWorkspaceId, async () => {
+  await loadRules()
+  if (activeRule.value) loadAll()
+})
 </script>
 <style scoped>
 .page { padding: 0; }
 .page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .page-head h2 { font-size: 22px; font-weight: 700; margin: 0; }
+.rule-mgr-btn { --el-button-text-color: unset; }
 .rule-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .rule-tip { font-size: 12px; color: var(--text-secondary); }
 

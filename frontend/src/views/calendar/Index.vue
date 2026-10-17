@@ -101,7 +101,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowRight, Clock, Location } from '@element-plus/icons-vue'
 import { calendarApi } from '@/api/calendar'
@@ -247,6 +247,9 @@ async function doDelete() {
 }
 
 onMounted(() => loadEvents())
+
+// 切换工作空间时重新加载
+watch(() => wsStore.currentWorkspaceId, () => loadEvents())
 </script>
 <style scoped>
 .page { padding: 0; }

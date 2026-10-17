@@ -11,6 +11,8 @@ class CategoryBase(BaseModel):
 
 class CategoryCreate(CategoryBase):
     """分类创建模型 - 面试考点：创建分类时的数据验证"""
+    workspace_id: Optional[int] = Field(None, description="工作空间ID（NULL=个人分类）")
+
     @validator('name')
     def name_not_empty(cls, v):
         """验证分类名称不能为空 - 面试考点：自定义验证器"""

@@ -13,19 +13,28 @@ def _clean_headers(headers: dict) -> dict:
     return {k: v for k, v in headers.items() if k.lower() not in skip}
 
 
-# 不包装的路径 — OpenAPI spec 必须保持原始格式
-SKIP_WRAP_PATHS = {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
+# 不包装的路径 — OpenAPI spec 必须保持原始格式，WebSocket 端点跳过
+SKIP_WRAP_PATHS = {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect", "/api/v1/ws"}
 
 
 class ResponseHandlerMiddleware(BaseHTTPMiddleware):
     """统一包装所有 JSON 响应为 {"code": 0, "message": "success", "data": ...} 格式"""
 
     async def dispatch(self, request: Request, call_next):
+        # WebSocket 请求直接放行，不处理响应
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            return await call_next(request)
         try:
             response = await call_next(request)
 
             # 跳过 OpenAPI 相关路径
             if request.url.path in SKIP_WRAP_PATHS or request.url.path.startswith("/docs"):
+                return response
+
+            # 错误响应（4xx/5xx）保持原生结构，不做成功包装
+            # 否则 FastAPI 的 {"detail": ...} 会被包成 {"code": 0, "message": "success", ...}，
+            # 前端读到 "success" 而拿不到真实错误文案
+            if response.status_code >= 400:
                 return response
 
             content_type = response.headers.get("content-type", "")

@@ -11,7 +11,7 @@
         <div class="notif-body">
           <div class="notif-title">{{ n.title }}</div>
           <div class="notif-content">{{ n.content }}</div>
-          <div class="notif-time">{{ n.created_at?.slice(0,16) }}</div>
+          <div class="notif-time">{{ formatTime(n.created_at) }}</div>
         </div>
         <el-tag :type="typeTag(n.type)" size="small">{{ n.type }}</el-tag>
       </div>
@@ -24,6 +24,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { notificationApi } from '@/api/notification'
+import { formatTime } from '@/utils/format'
 const list = ref([]); const loading = ref(false); const unread = ref(0)
 const p = ref(1); const total = ref(0)
 

@@ -41,18 +41,17 @@
       </div>
 
       <div class="sub-menu-body">
-        <router-link
+        <div
           v-for="item in currentMenuItems"
           :key="item.path"
-          :to="item.path"
           class="sub-item"
           :class="{ active: isMenuActive(item) }"
-          @click="closeSidebar"
+          @click="onMenuClick(item)"
         >
           <el-icon :size="16"><component :is="item.icon" /></el-icon>
           <span class="sub-label">{{ item.label }}</span>
           <el-badge v-if="item.badge" :value="item.badge" class="sub-badge" />
-        </router-link>
+        </div>
       </div>
 
       <WorkspaceSwitcher v-if="activeGroup === 'work'" class="sub-menu-switcher" />
@@ -117,7 +116,7 @@
           <!-- 用户头像 -->
           <el-dropdown trigger="click" @command="handleDropdownCommand">
             <div class="user-chip">
-              <img v-if="userStore.getAvatar" :src="userStore.getAvatar" class="user-avatar-img">
+              <img v-if="userStore.getAvatar" :src="appendToken(userStore.getAvatar)" class="user-avatar-img">
               <el-icon v-else class="user-avatar-icon"><User /></el-icon>
               <span class="user-name">{{ userStore.getNickname || '用户' }}</span>
               <el-icon :size="12"><ArrowDown /></el-icon>
@@ -155,34 +154,60 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/pinia/userStore'
 import { useThemeStore } from '@/pinia/themeStore'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
+import { useTaskStore } from '@/pinia/taskStore'
+import { useCategoryStore } from '@/pinia/categoryStore'
 import {
   House, List, Collection, User, DataAnalysis, PriceTag, Download,
   SwitchButton, MoonNight, Sunny, Menu, OfficeBuilding, Bell, ArrowDown,
   Odometer, ChatDotRound, Calendar, DocumentChecked, Clock, Notification,
-  Folder, Grid, Search, Fold, Expand, Loading
+  Folder, Grid, Search, Fold, Expand, Loading, ChatLineSquare
 } from '@element-plus/icons-vue'
-import { ElMessageBox, ElMessage } from 'element-plus'
+import { ElMessageBox, ElMessage, ElNotification } from 'element-plus'
 import { workspaceApi } from '@/api/workspace'
 import { notificationApi } from '@/api/notification'
 import { formatTime } from '@/utils/format'
+import { appendToken } from '@/utils/auth'
 import WorkspaceSwitcher from '@/components/Workspace/WorkspaceSwitcher.vue'
+import { useWebSocket } from '@/composables/useWebSocket'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const themeStore = useThemeStore()
 const workspaceStore = useWorkspaceStore()
+const taskStore = useTaskStore()
+const categoryStore = useCategoryStore()
+
+// workspace 切换时清空并刷新所有 store，防止不同空间数据残留
+watch(
+  () => workspaceStore.currentWorkspaceId,
+  async () => {
+    // taskStore
+    taskStore.tasks = []
+    taskStore.total = 0
+    taskStore.selectedTaskIds = []
+    // categoryStore
+    categoryStore.categories = []
+    await Promise.all([
+      taskStore.loadTasks(),
+      categoryStore.loadCategories()
+    ])
+  }
+)
 
 const subMenuCollapsed = ref(false)
 const mobileMenuOpen = ref(false)
 const invitationCount = ref(0)
 const ready = ref(false)
 const searchKeyword = ref('')
+
+// 全局 WebSocket 连接
+const { connect: wsConnect, subscribe: wsSubscribe } = useWebSocket()
 
 // 通知相关
 const notifList = ref([])
@@ -192,6 +217,7 @@ const pageTitle = computed(() => route.meta?.title || '工作台')
 
 // ====== 菜单分组（钉钉风格：一级图标 + 二级列表） ======
 const menuGroups = [
+  { key: 'agent',    label: 'AI助手', icon: ChatLineSquare },
   { key: 'work',     label: '工作台', icon: Odometer },
   { key: 'comm',     label: '沟通',   icon: ChatDotRound, badge: 0 },
   { key: 'office',   label: '办公',   icon: DocumentChecked },
@@ -201,34 +227,37 @@ const menuGroups = [
 ]
 
 const menuItems = computed(() => ({
+  agent: [
+    { path: '/agent',          label: '智能助手',   icon: ChatLineSquare, requiresWorkspace: true }
+  ],
   work: [
-    { path: '/',              label: '工作台',     icon: Odometer }
+    { path: '/',              label: '工作台',     icon: Odometer, requiresWorkspace: false }
   ],
   comm: [
-    { path: '/im',            label: '即时通讯',   icon: ChatDotRound }
+    { path: '/im',            label: '即时通讯',   icon: ChatDotRound, requiresWorkspace: true }
   ],
   office: [
-    { path: '/tasks',         label: '任务管理',   icon: List },
-    { path: '/calendar',      label: '日程日历',   icon: Calendar },
-    { path: '/approval',      label: 'OA审批',     icon: DocumentChecked },
-    { path: '/attendance',    label: '考勤打卡',   icon: Clock }
+    { path: '/tasks',         label: '任务管理',   icon: List, requiresWorkspace: true },
+    { path: '/calendar',      label: '日程日历',   icon: Calendar, requiresWorkspace: true },
+    { path: '/approval',      label: 'OA审批',     icon: DocumentChecked, requiresWorkspace: true },
+    { path: '/attendance',    label: '考勤打卡',   icon: Clock, requiresWorkspace: true }
   ],
   collab: [
-    { path: '/announcements', label: '企业公告',   icon: Notification },
-    { path: '/files',         label: '文件管理',   icon: Folder }
+    { path: '/announcements', label: '企业公告',   icon: Notification, requiresWorkspace: true },
+    { path: '/files',         label: '文件管理',   icon: Folder, requiresWorkspace: true }
   ],
   manage: [
-    { path: '/org/departments', label: '组织架构', icon: OfficeBuilding },
-    { path: '/org/members',     label: '成员花名册', icon: User },
-    { path: '/workspaces',      label: '工作空间', icon: Grid },
-    { path: '/invitations',     label: '团队邀请', icon: Bell, badge: invitationCount.value || 0 },
-    { path: '/statistics',      label: '数据统计', icon: DataAnalysis }
+    { path: '/org/departments', label: '组织架构', icon: OfficeBuilding, requiresWorkspace: true },
+    { path: '/org/members',     label: '成员花名册', icon: User, requiresWorkspace: true },
+    { path: '/workspaces',      label: '工作空间', icon: Grid, requiresWorkspace: false },
+    { path: '/invitations',     label: '团队邀请', icon: Bell, badge: invitationCount.value || 0, requiresWorkspace: true },
+    { path: '/statistics',      label: '数据统计', icon: DataAnalysis, requiresWorkspace: true }
   ],
   personal: [
-    { path: '/profile',       label: '我的资料',   icon: User },
-    { path: '/categories',    label: '分类管理',   icon: Collection },
-    { path: '/tags',          label: '标签管理',   icon: PriceTag },
-    { path: '/backup',        label: '数据备份',   icon: Download }
+    { path: '/profile',       label: '我的资料',   icon: User, requiresWorkspace: false },
+    { path: '/categories',    label: '分类管理',   icon: Collection, requiresWorkspace: false },
+    { path: '/tags',          label: '标签管理',   icon: PriceTag, requiresWorkspace: false },
+    { path: '/backup',        label: '数据备份',   icon: Download, requiresWorkspace: false }
   ]
 }))
 
@@ -237,7 +266,14 @@ const activeGroup = ref('work')
 const currentGroupLabel = computed(() =>
   menuGroups.find(g => g.key === activeGroup.value)?.label || ''
 )
-const currentMenuItems = computed(() => menuItems.value[activeGroup.value] || [])
+const currentMenuItems = computed(() => {
+  const items = menuItems.value[activeGroup.value] || []
+  // 个人空间模式下，办公模块只保留任务管理和日程日历
+  if (activeGroup.value === 'office' && workspaceStore.isPersonalMode) {
+    return items.filter(it => ['/tasks', '/calendar'].includes(it.path))
+  }
+  return items
+})
 
 function detectGroupFromRoute(path) {
   for (const [key, items] of Object.entries(menuItems.value)) {
@@ -248,7 +284,16 @@ function detectGroupFromRoute(path) {
   return 'work'
 }
 
+// 个人空间模式下完全禁用的模块组
+const PERSONAL_MODE_DISABLED_GROUPS = ['comm', 'collab', 'manage']
+
 function switchGroup(key) {
+  // 个人空间模式下，沟通/协作/管理模块整体禁用
+  if (PERSONAL_MODE_DISABLED_GROUPS.includes(key) && workspaceStore.isPersonalMode) {
+    ElMessage.warning('个人空间模式下暂不支持该功能，请先加入或创建工作空间')
+    return
+  }
+
   activeGroup.value = key
   // 切换分组时自动展开二级菜单（解决折叠后无法弹出的问题）
   subMenuCollapsed.value = false
@@ -259,13 +304,25 @@ function switchGroup(key) {
   // 切换分组时默认跳转到该组第一个菜单（如果当前不在该组内）
   const items = menuItems.value[key]
   if (items && items.length && !items.some(it => route.path === it.path)) {
-    router.push(items[0].path)
+    const firstItem = items[0]
+    router.push(firstItem.path)
   }
 }
+
 
 function isMenuActive(item) {
   if (item.path === '/') return route.path === '/'
   return route.path === item.path || route.path.startsWith(item.path + '/')
+}
+
+function onMenuClick(item) {
+  // 个人空间模式下拦截需要workspace的功能
+  if (item.requiresWorkspace && workspaceStore.isPersonalMode) {
+    ElMessage.warning('个人空间模式下暂不支持该功能，请先加入或创建工作空间')
+    return
+  }
+  router.push(item.path)
+  closeSidebar()
 }
 
 function closeSidebar() { mobileMenuOpen.value = false }
@@ -301,13 +358,53 @@ async function markAllNotifRead() {
 }
 
 function goNotifDetail(n) {
-  router.push('/notifications')
+  // 未读通知：标记已读 + 铃铛未读数 -1
+  if (n && !n.is_read && n.id) {
+    notificationApi.markRead({ notification_ids: [n.id] }).catch(() => {})
+    n.is_read = true
+    unreadNotifCount.value = Math.max(0, unreadNotifCount.value - 1)
+  }
+  // deep-link：按 related_type 跳转对应详情页
+  const map = {
+    task: n?.related_id ? `/tasks/${n.related_id}` : '/tasks',
+    approval: n?.related_id ? `/approval/${n.related_id}` : '/approval',
+    calendar: '/calendar',
+    announcement: n?.related_id ? `/announcements/${n.related_id}` : '/announcements',
+    chat: '/im',
+  }
+  router.push(map[n?.related_type] || '/notifications')
+}
+
+// ====== 实时通知（WebSocket 推送 → toast + 铃铛即时更新） ======
+function showNotifToast(n) {
+  ElNotification({
+    title: n.title || '新通知',
+    message: n.content || '点击查看详情',
+    type: n.type === 'approval' ? 'warning' : 'info',
+    duration: 5000,
+    onClick: () => goNotifDetail(n),
+  })
+}
+
+function handleWsNotification(e) {
+  const n = e.detail
+  if (!n || !n.id) return
+  // 防重复（同一通知可能因重连收到多次）
+  if (notifList.value.some(x => x.id === n.id)) return
+  // 铃铛未读数 +1，列表前插（面板打开时也能即时看到）
+  unreadNotifCount.value += 1
+  notifList.value = [n, ...notifList.value].slice(0, 10)
+  showNotifToast(n)
 }
 
 // ====== 初始化 ======
 onMounted(async () => {
   activeGroup.value = detectGroupFromRoute(route.path)
-  await workspaceStore.loadWorkspaces()
+  try {
+    await workspaceStore.loadWorkspaces()
+  } catch (e) {
+    console.error('加载工作空间失败:', e)
+  }
   workspaceStore.restoreWorkspaceContext()
   ready.value = true
   try {
@@ -315,8 +412,17 @@ onMounted(async () => {
     invitationCount.value = res.count || 0
   } catch {}
   await loadNotifList()
-  // 每 60 秒刷新未读数
+  // 每 60 秒刷新未读数（兜底，实时由 WS 推送驱动）
   setInterval(loadNotifList, 60000)
+  // 建立 WebSocket 连接并订阅 IM 频道
+  wsConnect()
+  wsSubscribe(['im'])
+  // 监听实时推送的新通知 → toast + 铃铛即时更新
+  window.addEventListener('ws:new_notification', handleWsNotification)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('ws:new_notification', handleWsNotification)
 })
 
 const handleDropdownCommand = async (command) => {
@@ -487,6 +593,7 @@ const handleDropdownCommand = async (command) => {
   font-size: 14px;
   font-weight: 500;
   margin: 2px 0;
+  cursor: pointer;
   transition: all 0.2s ease;
 }
 .sub-item:hover {

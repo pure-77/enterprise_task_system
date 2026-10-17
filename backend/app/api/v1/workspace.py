@@ -13,6 +13,7 @@ from app.core.permissions import get_workspace_member, require_role
 from app.crud.user import user as user_crud, user
 from app.api.v1.task import get_current_user_id
 from app.services.email_service import email_service
+from app.services.cache_service import CacheService
 
 router = APIRouter()
 
@@ -139,6 +140,7 @@ def update_member_role(
     if role_in.role == WorkspaceRole.OWNER:
         raise HTTPException(status_code=400, detail="不能将成员设置为Owner（需转让空间）")
     workspace_member.update_role(db, member, role_in.role)
+    CacheService.delete_member_permission(workspace_id, target_user_id)
     return {"message": "角色修改成功"}
 
 
@@ -157,6 +159,7 @@ def remove_member(
         raise HTTPException(status_code=400, detail="不能移除Owner，请先转让空间或解散空间")
     workspace_member.remove_member(db, member)
     workspace_activity.add(db, workspace_id, user_id, "member_removed", "member", target_user_id)
+    CacheService.delete_member_permission(workspace_id, target_user_id)
     return {"message": "成员已移除"}
 
 
@@ -171,6 +174,7 @@ def leave_workspace(
         raise HTTPException(status_code=400, detail="Owner不能退出空间，请先转让或解散空间")
     workspace_member.remove_member(db, member)
     workspace_activity.add(db, workspace_id, user_id, "member_left", "member", user_id)
+    CacheService.delete_member_permission(workspace_id, user_id)
     return {"message": "已退出空间"}
 
 
@@ -200,10 +204,10 @@ def create_invitation(
     ws = workspace.get_by_id(db, workspace_id)
     inviter = user_crud.get(db, user_id)
 
-    # 后台发送邀请邮件
+    # 异步发送邀请邮件 — 投递到 Celery Worker
     inviter_name = inviter.nickname if inviter else "未知用户"
-    background_tasks.add_task(
-        email_service.send_invitation_email,
+    from app.tasks.email_tasks import send_invitation_email
+    send_invitation_email.delay(
         inv_in.invitee_email, ws.name, inviter_name, inv_in.role.value
     )
 

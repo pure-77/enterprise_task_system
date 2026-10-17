@@ -11,4 +11,9 @@ export const imApi = {
   addMember: (convId, data) => request.post(`/im/conversations/${convId}/members`, data),
   removeMember: (convId, userId) => request.delete(`/im/conversations/${convId}/members/${userId}`),
   toggleMute: (convId, data) => request.put(`/im/conversations/${convId}/mute`, data),
+  uploadFile: (workspaceId, file) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request.post('/im/upload', fd, { params: { workspace_id: workspaceId }, headers: { 'Content-Type': 'multipart/form-data' } })
+  },
 }

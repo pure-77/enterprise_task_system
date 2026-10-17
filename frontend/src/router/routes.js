@@ -6,7 +6,7 @@ const routes = [
     path: '/',
     name: 'Home',
     component: MainLayout,
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, requiresWorkspace: true },
     children: [
       {
         path: '',
@@ -31,7 +31,8 @@ const routes = [
       {
         path: 'categories',
         name: 'CategoryList',
-        component: () => import('@/views/Category/Index.vue')
+        component: () => import('@/views/Category/Index.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'statistics',
@@ -41,32 +42,38 @@ const routes = [
       {
         path: 'profile',
         name: 'UserProfile',
-        component: () => import('@/views/User/Profile.vue')
+        component: () => import('@/views/User/Profile.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'tags',
         name: 'Tags',
-        component: () => import('@/views/User/Tags.vue')
+        component: () => import('@/views/User/Tags.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'backup',
         name: 'Backup',
-        component: () => import('@/views/User/Backup.vue')
+        component: () => import('@/views/User/Backup.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'workspaces',
         name: 'WorkspaceList',
-        component: () => import('@/views/Workspace/List.vue')
+        component: () => import('@/views/Workspace/List.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'workspaces/create',
         name: 'WorkspaceCreate',
-        component: () => import('@/views/Workspace/Create.vue')
+        component: () => import('@/views/Workspace/Create.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'workspaces/:id/settings',
         name: 'WorkspaceSettings',
-        component: () => import('@/views/Workspace/Settings.vue')
+        component: () => import('@/views/Workspace/Settings.vue'),
+        meta: { requiresWorkspace: false }
       },
       {
         path: 'invitations',
@@ -74,6 +81,12 @@ const routes = [
         component: () => import('@/views/Invitation/Index.vue')
       },
       // ===== 新模块路由 =====
+      {
+        path: 'agent',
+        name: 'Agent',
+        component: () => import('@/views/agent/Index.vue'),
+        meta: { title: '智能助手' }
+      },
       {
         path: 'im',
         name: 'IM',

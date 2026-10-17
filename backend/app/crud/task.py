@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import and_, or_
 from typing import List, Optional, Tuple
 from app.models.task import Task, TaskStatus, TaskPriority
@@ -52,8 +52,15 @@ class TaskCRUD:
           - MEMBER：只能读分配给自己的 / 自己创建的 / 团队公开的
         """
         from app.services.task_status_service import get_beijing_time
+        from app.models.task_completion import TaskCompletion
 
-        task = db.query(Task).filter(Task.id == task_id, Task.is_active == True).first()
+        task = db.query(Task).options(
+            selectinload(Task.tags),
+            selectinload(Task.assignees),
+            joinedload(Task.category),
+            joinedload(Task.assignee),
+            selectinload(Task.completions).selectinload(TaskCompletion.user),
+        ).filter(Task.id == task_id, Task.is_active == True).first()
         if not task:
             return None
 
@@ -102,8 +109,8 @@ class TaskCRUD:
         return self.get_task_with_permission(db, task_id, user_id)
 
     def _load_task_relations(self, db: Session, task: Task):
-        """加载任务关联数据：分类、标签、被分配人、完成记录"""
-        db.refresh(task, ['category', 'tags', 'assignees'])
+        """加载任务关联数据 — 已在查询时通过 joinedload/selectinload 预加载，此方法保留兼容"""
+        pass
     
     def get_multi(
         self,
@@ -141,7 +148,7 @@ class TaskCRUD:
             query = query.filter(Task.workspace_id == workspace_id)
 
             if member.role not in [WorkspaceRole.OWNER, WorkspaceRole.ADMIN]:
-                # 普通成员 → 分配给自己 + 自己创建的 + 团队公开的 + 多人分配中包含自己
+                # 普通成员 → 分配给自己 + 自己创建的 + 团队公开 + 多人分配包含自己
                 from app.models.task_assignee import task_assignees
                 query = query.outerjoin(
                     task_assignees,
@@ -198,9 +205,39 @@ class TaskCRUD:
 
         total = query.count()
 
-        tasks = query.order_by(
-            Task.due_date.asc(),
-            Task.priority.desc()
+        # 排序逻辑：待办优先，同组内按规则排序
+        # - 待办组（status 非 completed/deleted/cancelled）：按优先级高→低、截止日期近→远（无截止排最后）
+        # - 已完成组：按 updated_at 升序（完成后会更新 updated_at，早完成的在前）
+        # 注：Task 模型没有 completed_at 字段，用 updated_at 替代作为完成时间
+        from sqlalchemy import case
+
+        DONE_STATUSES = ['completed', 'deleted', 'cancelled']
+
+        # is_done: 待办=0 排前，已完成/已删/已取消=1 排后
+        is_done = case(
+            (Task.status.in_(DONE_STATUSES), 1),
+            else_=0
+        )
+
+        # 截止日期 null 标记：有截止日期=0 排前，无截止日期=1 排后（MySQL 不支持 nullslast，用 case 兼容）
+        due_nullflag = case(
+            (Task.due_date.is_(None), 1),
+            else_=0
+        )
+
+        from app.models.task_completion import TaskCompletion
+        tasks = query.options(
+            selectinload(Task.tags),
+            selectinload(Task.assignees),
+            joinedload(Task.category),
+            joinedload(Task.assignee),
+            selectinload(Task.completions).selectinload(TaskCompletion.user),
+        ).order_by(
+            is_done.asc(),                    # 第一层：待办优先于已完成
+            Task.priority.desc(),             # 第二层：优先级高的在前
+            due_nullflag.asc(),               # 第三层：无截止日期的排最后
+            Task.due_date.asc(),               # 第四层：截止日期近的在前
+            Task.updated_at.asc(),            # 第五层（已完成组内）：早完成的在前
         ).offset(skip).limit(limit).all()
 
         return tasks, total

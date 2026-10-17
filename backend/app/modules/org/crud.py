@@ -55,11 +55,11 @@ class DepartmentCRUD:
         leaders: dict
     ) -> list[dict]:
         """使用 dict 索引构建树形结构 — O(n) 复杂度"""
-        # 建立 id -> node 字典
+        # 第一遍：建立 id -> node 字典
         node_map = {}
         for dept in departments:
             leader = leaders.get(dept.leader_id)
-            node = {
+            node_map[dept.id] = {
                 "id": dept.id,
                 "name": dept.name,
                 "parent_id": dept.parent_id,
@@ -72,9 +72,8 @@ class DepartmentCRUD:
                 "member_count": member_counts.get(dept.id, 0),
                 "children": []
             }
-            node_map[dept.id] = node
 
-        # 一次遍历建立父子关系
+        # 第二遍：挂载父子关系（与排序无关，确保父节点已存在于 map 中）
         tree = []
         for dept in departments:
             node = node_map[dept.id]
@@ -82,6 +81,15 @@ class DepartmentCRUD:
                 node_map[dept.parent_id]["children"].append(node)
             else:
                 tree.append(node)
+
+        # 第三遍：自底向上汇总 — 父部门人数 = 本部门人数 + 所有子部门人数之和
+        def _aggregate(node):
+            for child in node["children"]:
+                node["member_count"] += _aggregate(child)
+            return node["member_count"]
+
+        for root in tree:
+            _aggregate(root)
         return tree
 
     def get_by_id(self, db: Session, dept_id: int) -> Department:

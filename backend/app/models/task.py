@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Enum, Boolean
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Enum, Boolean, Index
 from sqlalchemy.orm import relationship
 import enum
 from app.db.base import BaseModel
@@ -24,7 +24,14 @@ class TaskPriority(str, enum.Enum):
 class Task(BaseModel):
     """任务模型 - 面试考点：与用户和分类的关联关系"""
     __tablename__ = "tasks"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        Index('ix_tasks_user_status_due', 'user_id', 'status', 'due_date'),
+        Index('ix_tasks_workspace_is_public', 'workspace_id', 'is_team_wide'),
+        Index('ix_tasks_workspace_status', 'workspace_id', 'status'),
+        Index('ix_tasks_due_date', 'due_date'),
+        Index('ix_tasks_status', 'status'),
+        {'extend_existing': True},
+    )
     
     title = Column(String(255), nullable=False, comment="任务标题")
     description = Column(Text, nullable=True, comment="任务描述")

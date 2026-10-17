@@ -6,13 +6,17 @@ export const useWorkspaceStore = defineStore('workspace', {
   state: () => ({
     workspaces: [],
     currentWorkspaceId: null,
-    currentWorkspace: null,
     loading: false
   }),
 
   getters: {
     getWorkspaces: (state) => state.workspaces,
     isPersonalMode: (state) => state.currentWorkspaceId === null,
+    // 当前选中的工作空间对象（动态计算，永远和 currentWorkspaceId 同步）
+    currentWorkspace: (state) => {
+      if (!state.currentWorkspaceId) return null
+      return state.workspaces.find(w => w.id === state.currentWorkspaceId) || null
+    },
     currentRole: (state) => {
       if (!state.currentWorkspaceId || !state.workspaces.length) return null
       const ws = state.workspaces.find(w => w.id === state.currentWorkspaceId)
@@ -87,9 +91,12 @@ export const useWorkspaceStore = defineStore('workspace', {
 
     restoreWorkspaceContext() {
       const saved = localStorage.getItem('currentWorkspaceId')
-      if (saved === '' || saved === null || saved === undefined) {
-        // 自动选择第一个可用工作空间，避免 null 导致新模块 API 报错
+      if (saved === null || saved === undefined) {
+        // 首次访问：自动选择第一个可用工作空间
         this.currentWorkspaceId = this.workspaces.length > 0 ? this.workspaces[0].id : null
+      } else if (saved === '') {
+        // 用户选择了个人模式
+        this.currentWorkspaceId = null
       } else {
         this.currentWorkspaceId = parseInt(saved)
       }

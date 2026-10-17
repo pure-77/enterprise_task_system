@@ -42,8 +42,9 @@ async def send_verify_code(
     # 记录发送时间 - 面试考点：用于防刷机制
     cache_service.set_send_time(email)
     
-    # 异步发送邮件 - 面试考点：不阻塞响应，后台发送
-    await email_service.send_verify_code_async(email, code)
+    # 异步发送邮件 — 投递到 Celery Worker，不阻塞响应
+    from app.tasks.email_tasks import send_verify_code_email
+    send_verify_code_email.delay(email, code)
     
     return VerifyCodeResponse(
         message="验证码已发送到您的邮箱",
@@ -66,11 +67,11 @@ async def register(
         raise EmailAlreadyExistsException()
     
     # 验证验证码 - 面试考点：从Redis读取验证码进行校验
-    print(f"开始验证验证码...")
+    # print(f"开始验证验证码...")
     stored_code = cache_service.get_verify_code(user_in.email)
-    print(f"存储的验证码: {stored_code}, 输入的验证码: {user_in.verify_code}")
+    # print(f"存储的验证码: {stored_code}, 输入的验证码: {user_in.verify_code}")
     if not stored_code or stored_code != user_in.verify_code:
-        print(f"验证码验证失败: stored_code={stored_code}, input={user_in.verify_code}")
+        # print(f"验证码验证失败: stored_code={stored_code}, input={user_in.verify_code}")
         raise InvalidVerifyCodeException()
     
     # 创建用户 - 面试考点：密码在CRUD层加密
@@ -108,8 +109,8 @@ async def login(
         )
     
     # 生成JWT令牌 - 面试考点：包含用户信息和过期时间
-    access_token = create_access_token(data={"sub": db_user.email, "user_id": db_user.id})
-    refresh_token = create_refresh_token(data={"sub": db_user.email, "user_id": db_user.id})
+    access_token = create_access_token(data={"sub": db_user.email, "user_id": db_user.id}, db=db)
+    refresh_token = create_refresh_token(data={"sub": db_user.email, "user_id": db_user.id}, db=db)
     
     # 存储刷新令牌到Redis - 面试考点：使用用户ID作为key，设置7天过期
     cache_service.set_refresh_token(db_user.id, refresh_token)
@@ -123,7 +124,8 @@ async def login(
 # 
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
-    request: RefreshTokenRequest
+    request: RefreshTokenRequest,
+    db: Session = Depends(get_db),
 ):
     """刷新令牌接口 - 面试考点：使用刷新令牌获取新的访问令牌，含重用检测"""
     import hashlib
@@ -131,8 +133,8 @@ async def refresh_token(
 
     refresh_token = request.refresh_token
 
-    # 解码刷新令牌 - 面试考点：验证令牌有效性
-    payload = decode_token(refresh_token)
+    # 解码刷新令牌 - 传 db 确保冷启动时也能从 system_config 表读到正确的签名密钥
+    payload = decode_token(refresh_token, db=db)
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -166,8 +168,12 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="刷新令牌已被使用，请使用最新的令牌"
         )
+    elif not stored_refresh_token:
+        # Redis 无记录（Redis 重启/缓存被清）——JWT 本身验签+有效期已通过上面的 decode_token 校验，
+        # 信任该令牌并回种 Redis，避免 Redis 数据丢失后所有用户被迫重新登录
+        cache_service.set_refresh_token(user_id, refresh_token)
     else:
-        # 令牌既不是当前有效令牌，也未被使用过（已过期或无效）
+        # 令牌不是当前有效令牌，也未被使用过（已过期或无效）
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="刷新令牌已过期或无效"
@@ -233,7 +239,10 @@ async def logout(
     
     # 删除Redis中的刷新令牌 - 面试考点：使刷新令牌失效
     cache_service.delete_refresh_token(user_id)
-    
+
+    # 失效用户所有缓存
+    cache_service.invalidate_user_all_caches(user_id)
+
     return {
         "message": "退出登录成功"
     }

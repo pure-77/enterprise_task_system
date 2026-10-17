@@ -65,7 +65,7 @@
             </div>
             <div v-else class="member-list">
               <div v-for="m in deptMembers" :key="m.id" class="member-row">
-                <el-avatar :size="36" :src="m.avatar">{{ (m.nickname || m.real_name || '?')[0] }}</el-avatar>
+                <el-avatar :size="36" :src="appendToken(m.avatar)">{{ (m.nickname || m.real_name || '?')[0] }}</el-avatar>
                 <div class="member-info">
                   <div class="member-name">{{ m.nickname || m.real_name || '未命名' }}</div>
                   <div class="member-sub">
@@ -121,7 +121,7 @@
           class="member-row"
           @click="addMemberToDept(m)"
         >
-          <el-avatar :size="32" :src="m.avatar">{{ (m.nickname || m.real_name || '?')[0] }}</el-avatar>
+          <el-avatar :size="32" :src="appendToken(m.avatar)">{{ (m.nickname || m.real_name || '?')[0] }}</el-avatar>
           <div class="member-info">
             <div class="member-name">{{ m.nickname || m.real_name || '未命名' }}</div>
             <div class="member-sub">
@@ -160,11 +160,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { More, Plus, Search } from '@element-plus/icons-vue'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
 import { useUserStore } from '@/pinia/userStore'
+import { appendToken } from '@/utils/auth'
 import request from '@/api/request'
 
 const wsStore = useWorkspaceStore()
@@ -371,6 +372,12 @@ async function checkPermission() {
 }
 
 onMounted(async () => {
+  await checkPermission()
+  await Promise.all([loadTree(), loadAllMembers()])
+})
+
+// 切换工作空间时重新加载
+watch(() => wsStore.currentWorkspaceId, async () => {
   await checkPermission()
   await Promise.all([loadTree(), loadAllMembers()])
 })

@@ -129,19 +129,20 @@ export const useUserStore = defineStore('user', {
       if (!this.token) return false
       // 本地解码JWT检查是否过期
       if (auth.isAccessTokenExpired()) {
-        // access_token已过期，尝试用refresh_token刷新
-        if (this.refreshToken && !auth.isRefreshTokenExpired()) {
-          try {
-            const response = await authApi.refreshToken()
-            this.setToken(response.access_token)
-            this.setRefreshToken(response.refresh_token)
-            return true
-          } catch {
-            // 刷新失败，token无效
-            return false
-          }
+        // access_token已过期，检查 refresh_token 是否也过期
+        if (!this.refreshToken || auth.isRefreshTokenExpired()) {
+          // refresh_token 也过期了，直接返回 false，不发 API 请求
+          return false
         }
-        return false
+        // refresh_token 有效，尝试刷新
+        try {
+          const response = await authApi.refreshToken()
+          this.setToken(response.access_token)
+          this.setRefreshToken(response.refresh_token)
+          return true
+        } catch {
+          return false
+        }
       }
       return true
     },
@@ -156,6 +157,9 @@ export const useUserStore = defineStore('user', {
           this.refreshToken = null
           this.userInfo = null
           localStorage.removeItem('userInfo')
+        } else if (!this.userInfo) {
+          // token 有效但没有用户信息，加载用户信息
+          await this.loadUserInfo()
         }
       } else {
         this.isLoggedIn = false

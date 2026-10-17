@@ -702,6 +702,14 @@ onMounted(async () => {
   await taskStore.loadTasks()
 })
 
+// 切换工作空间时重新加载
+watch(() => workspaceStore.currentWorkspaceId, async () => {
+  await categoryStore.loadCategories()
+  await loadTags()
+  await loadFilterMembers()
+  await taskStore.loadTasks()
+})
+
 const loadTags = async () => {
   try {
     const params = workspaceStore.currentWorkspaceId ? { workspace_id: workspaceStore.currentWorkspaceId } : {}

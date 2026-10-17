@@ -341,7 +341,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { List, CircleCheck, Clock, CircleClose } from '@element-plus/icons-vue'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
@@ -460,6 +460,11 @@ const loadStats = async () => {
 }
 
 onMounted(() => {
+  loadStats()
+})
+
+// 切换工作空间时重新加载
+watch(() => workspaceStore.currentWorkspaceId, () => {
   loadStats()
 })
 </script>

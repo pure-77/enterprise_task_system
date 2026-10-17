@@ -102,3 +102,29 @@ class EmailService:
 email_service = EmailService()
 
 
+def send_html_email_sync(to_email: str, subject: str, html_content: str) -> bool:
+    """同步发送 HTML 邮件（供 Celery 等非 async 上下文调用）"""
+    try:
+        message = EmailMessage()
+        message["From"] = settings.EMAIL_FROM
+        message["To"] = to_email
+        message["Subject"] = subject
+        message.set_content(html_content, subtype="html")
+
+        async def _send():
+            async with SMTP(
+                    hostname=settings.EMAIL_HOST,
+                    port=settings.EMAIL_PORT,
+                    use_tls=True,
+                    timeout=15
+            ) as smtp:
+                await smtp.login(settings.EMAIL_USERNAME, settings.EMAIL_PASSWORD)
+                await smtp.send_message(message)
+
+        asyncio.run(_send())
+        return True
+    except Exception as e:
+        print(f"发送邮件失败 [{subject}]: {e}")
+        return False
+
+

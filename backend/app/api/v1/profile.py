@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.core.security import get_password_hash, verify_password
 from app.api.v1.task import get_current_user_id
+from app.services.cache_service import CacheService
 import os
 import uuid
 
@@ -247,21 +248,29 @@ async def get_user_info(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    """获取用户信息 - 面试考点：用户信息获取"""
+    """获取用户信息 - 带缓存优化"""
+    # 尝试从缓存读取
+    cached = CacheService.get_user_info(user_id)
+    if cached:
+        return cached
+
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="用户不存在"
         )
-    
-    return {
+
+    result = {
         "id": db_user.id,
         "nickname": db_user.nickname,
         "email": db_user.email,
         "avatar": db_user.avatar,
         "created_at": db_user.created_at
     }
+    # 回填缓存
+    CacheService.set_user_info(user_id, result)
+    return result
 
 
 @router.post("/avatar")

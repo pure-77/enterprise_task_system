@@ -16,9 +16,12 @@ let requests = []
 
 request.interceptors.request.use(
   config => {
-    const token = auth.getToken()
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+    // 刷新令牌请求跳过 Authorization header，避免过期 token 干扰
+    if (!config._skipAuth) {
+      const token = auth.getToken()
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`
+      }
     }
     return config
   },
@@ -87,6 +90,26 @@ request.interceptors.response.use(
                 config.headers.Authorization = `Bearer ${response.access_token}`
                 return request(config)
               } catch (refreshError) {
+                // 多标签页竞态：另一个标签页可能刚刷新过令牌，localStorage 里已是新 token
+                const latestRefresh = auth.getRefreshToken()
+                if (refreshError.response?.status === 401 && latestRefresh && latestRefresh !== refreshToken) {
+                  try {
+                    const retry = await authApi.refreshToken()
+                    auth.setToken(retry.access_token)
+                    auth.setRefreshToken(retry.refresh_token)
+                    const userStore2 = useUserStore()
+                    userStore2.token = retry.access_token
+                    userStore2.refreshToken = retry.refresh_token
+                    requests.forEach(({ resolve, config }) => {
+                      config.headers.Authorization = `Bearer ${retry.access_token}`
+                      resolve(request(config))
+                    })
+                    requests = []
+                    config.headers.Authorization = `Bearer ${retry.access_token}`
+                    return request(config)
+                  } catch { /* 重试仍失败，走下方踢登录逻辑 */ }
+                }
+
                 // 刷新失败，拒绝所有排队请求
                 requests.forEach(({ reject }) => reject(refreshError))
                 requests = []

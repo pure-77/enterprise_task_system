@@ -57,3 +57,17 @@ export const auth = {
     return !!this.getToken()
   }
 }
+
+/**
+ * 为 /uploads 路径的 URL 追加 token 查询参数
+ * 用于 <img> / <el-avatar> 等无法发送 Authorization header 的场景
+ */
+export function appendToken(url) {
+  if (!url) return url
+  if (!url.includes('/uploads/')) return url
+  if (url.includes('token=')) return url
+  const token = auth.getToken()
+  if (!token) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}token=${token}`
+}

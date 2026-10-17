@@ -63,13 +63,17 @@ export const categoryApi = {
    * 删除分类
    * @param {number} id - 分类ID
    * @param {number} [moveToCategoryId] - 迁移任务到的分类ID
+   * @param {number} [workspaceId] - 工作空间ID
    * @returns {Promise} - 返回删除结果
    */
-  deleteCategory: (id, moveToCategoryId) => {
+  deleteCategory: (id, moveToCategoryId, workspaceId) => {
+    const params = {}
+    if (moveToCategoryId !== undefined && moveToCategoryId !== null) params.move_to_category_id = moveToCategoryId
+    if (workspaceId !== undefined && workspaceId !== null) params.workspace_id = workspaceId
     return request({
       url: `/categories/${id}`,
       method: 'delete',
-      params: { move_to_category_id: moveToCategoryId }
+      params
     })
   }
 }

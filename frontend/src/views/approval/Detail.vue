@@ -5,13 +5,13 @@
       <div class="info-row"><span class="label">标题</span><span>{{ detail.title }}</span></div>
       <div class="info-row"><span class="label">申请人</span><span>{{ detail.applicant_name }}</span></div>
       <div class="info-row"><span class="label">状态</span><el-tag :type="statusType(detail.status)">{{ statusLabel(detail.status) }}</el-tag></div>
-      <div class="info-row"><span class="label">提交时间</span><span>{{ detail.submitted_at }}</span></div>
+      <div class="info-row"><span class="label">提交时间</span><span>{{ formatTime(detail.submitted_at) }}</span></div>
 
       <h4 style="margin: 24px 0 12px">审批流程</h4>
       <el-timeline>
         <el-timeline-item v-for="n in detail.nodes" :key="n.id"
           :type="n.status === 'approved' ? 'success' : n.status === 'rejected' ? 'danger' : 'warning'"
-          :timestamp="n.acted_at">
+          :timestamp="formatTime(n.acted_at)">
           {{ n.node_name }} — {{ n.approver_name }}
           <template v-if="n.status === 'pending' && canAct(n)">
             <div style="margin-top:8px">
@@ -36,6 +36,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { approvalApi } from '@/api/approval'
 import { useUserStore } from '@/pinia/userStore'
+import { formatTime } from '@/utils/format'
 
 const route = useRoute()
 const userStore = useUserStore()

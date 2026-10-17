@@ -19,6 +19,6 @@ export const authApi = {
   
   refreshToken() {
     const refreshToken = localStorage.getItem('refresh_token')
-    return request.post('/auth/refresh', { refresh_token: refreshToken })
+    return request.post('/auth/refresh', { refresh_token: refreshToken }, { _skipAuth: true })
   }
 }

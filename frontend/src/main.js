@@ -15,12 +15,12 @@ app.use(pinia)
 app.use(router)
 app.use(ElementPlus)
 
-// 初始化认证状态
-const userStore = useUserStore()
-userStore.initAuth()
-
-// 初始化主题
+// 初始化主题（同步，先执行）
 const themeStore = useThemeStore()
 themeStore.initTheme()
 
-app.mount('#app')
+// 等待认证初始化完成后再挂载，避免首屏白屏/加载中
+const userStore = useUserStore()
+userStore.initAuth().finally(() => {
+  app.mount('#app')
+})

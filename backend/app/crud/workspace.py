@@ -71,11 +71,18 @@ class WorkspaceCRUD:
             Workspace.is_active == True
         ).order_by(Workspace.created_at.desc()).all()
 
+        # 一次性查询所有 workspace 的成员数量，避免 N+1
+        from sqlalchemy import func
+        member_counts = db.query(
+            WorkspaceMember.workspace_id,
+            func.count(WorkspaceMember.id)
+        ).filter(
+            WorkspaceMember.is_active == True
+        ).group_by(WorkspaceMember.workspace_id).all()
+        member_count_map = {ws_id: count for ws_id, count in member_counts}
+
         workspace_list = []
         for ws, role, owner_nickname, owner_avatar in results:
-            member_count = db.query(WorkspaceMember).filter(
-                WorkspaceMember.workspace_id == ws.id
-            ).count()
             workspace_list.append({
                 "id": ws.id,
                 "name": ws.name,
@@ -83,7 +90,7 @@ class WorkspaceCRUD:
                 "owner_id": ws.owner_id,
                 "owner_nickname": owner_nickname or "匿名用户",
                 "owner_avatar": owner_avatar,
-                "member_count": member_count,
+                "member_count": member_count_map.get(ws.id, 0),
                 "role": role.value if role else None,
                 "created_at": ws.created_at,
                 "updated_at": ws.updated_at,

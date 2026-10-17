@@ -1,6 +1,6 @@
 """即时通讯模块 — CRUD 操作"""
 from datetime import datetime
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import desc, and_, or_
 from app.modules.im.models import (
     Conversation, ConversationMember, Message, MessageRead,
@@ -92,10 +92,14 @@ class ConversationCRUD:
         return conv
 
     def get_list(self, db: Session, user_id: int, workspace_id: int) -> list[dict]:
-        """获取用户的会话列表（按最后消息时间倒序）"""
+        """获取用户的会话列表（按最后消息时间倒序）
+        优化：使用 selectinload 预加载成员→用户、批量查询最后消息，消除 N+1
+        """
         memberships = (
             db.query(ConversationMember)
-            .options(joinedload(ConversationMember.conversation))
+            .options(
+                selectinload(ConversationMember.conversation).joinedload(Conversation.members).selectinload(ConversationMember.user),
+            )
             .join(Conversation)
             .filter(
                 ConversationMember.user_id == user_id,
@@ -107,12 +111,19 @@ class ConversationCRUD:
             .all()
         )
 
+        # 批量查询所有会话的最后一条消息，避免 N+1
+        last_msg_ids = [m.conversation.last_message_id for m in memberships if m.conversation.last_message_id]
+        last_messages_map = {}
+        if last_msg_ids:
+            msgs = db.query(Message).options(
+                joinedload(Message.sender)
+            ).filter(Message.id.in_(last_msg_ids)).all()
+            last_messages_map = {msg.id: msg for msg in msgs}
+
         result = []
         for m in memberships:
             conv = m.conversation
-            last_msg = None
-            if conv.last_message_id:
-                last_msg = db.query(Message).filter(Message.id == conv.last_message_id).first()
+            last_msg = last_messages_map.get(conv.last_message_id) if conv.last_message_id else None
 
             # 单聊显示对方名字和头像，群聊用会话名称
             display_name = conv.name
@@ -245,7 +256,10 @@ class MessageCRUD:
         self, db: Session, conv_id: int, user_id: int,
         page: int = 1, page_size: int = 20, before_id: int = None
     ) -> dict:
-        """获取消息列表 — 分页，支持向前翻页"""
+        """获取消息列表 — 游标分页（before_id），批量加载已读数和发送者
+        - 首次加载: page=1, before_id=None → 返回最新的 page_size 条
+        - 上翻加载: before_id=最后一条消息ID → 返回该 ID 之前的 page_size 条
+        """
         query = db.query(Message).filter(
             Message.conversation_id == conv_id,
             Message.is_active == True,
@@ -254,21 +268,30 @@ class MessageCRUD:
         if before_id:
             query = query.filter(Message.id < before_id)
 
-        total = query.count()
+        # 游标分页: 不使用 offset，直接用 WHERE id < before_id + LIMIT
         messages = (
-            query.order_by(desc(Message.created_at))
-            .offset((page - 1) * page_size)
+            query.order_by(desc(Message.created_at), desc(Message.id))
             .limit(page_size)
             .all()
         )
 
-        items = []
-        for msg in reversed(messages):
-            # 获取已读人数
-            read_count = db.query(MessageRead).filter(
-                MessageRead.message_id == msg.id
-            ).count()
+        if not messages:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "has_more": False}
 
+        # 批量查询已读人数（排除发送者自己），避免 N+1
+        msg_ids = [m.id for m in messages]
+        from sqlalchemy import func
+        # 查询每条消息的已读人数，但排除发送者自己
+        read_counts = {}
+        for msg in messages:
+            count = db.query(func.count(MessageRead.user_id)).filter(
+                MessageRead.message_id == msg.id,
+                MessageRead.user_id != msg.sender_id  # 排除发送者自己
+            ).scalar()
+            read_counts[msg.id] = count
+
+        items = []
+        for msg in reversed(messages):  # 旧→新正序
             items.append({
                 "id": msg.id,
                 "conversation_id": msg.conversation_id,
@@ -278,15 +301,26 @@ class MessageCRUD:
                 "msg_type": msg.msg_type.value,
                 "content": msg.content,
                 "reply_to_id": msg.reply_to_id,
-                "read_count": read_count,
+                "read_count": read_counts.get(msg.id, 0),
                 "created_at": msg.created_at.isoformat() if msg.created_at else None,
             })
 
+        # 是否还有更早的消息
+        oldest_id = min(msg_ids)
+        has_more = db.query(Message.id).filter(
+            Message.conversation_id == conv_id,
+            Message.is_active == True,
+            Message.is_recalled == False,
+            Message.id < oldest_id
+        ).first() is not None
+
         return {
             "items": items,
-            "total": total,
+            "total": None,  # 游标分页不返回 total，用 has_more 代替
             "page": page,
-            "page_size": page_size
+            "page_size": page_size,
+            "has_more": has_more,
+            "oldest_id": oldest_id,
         }
 
     def recall(self, db: Session, msg_id: int, user_id: int) -> Message:

@@ -22,6 +22,9 @@ class CRUDCategory(CRUDBase[Category, CategoryCreate, CategoryUpdate]):
         query = db.query(self.model).filter(self.model.id == id, self.model.user_id == user_id)
         if workspace_id is not None:
             query = query.filter(self.model.workspace_id == workspace_id)
+        else:
+            # 个人模式必须明确排除 workspace 分类，防止跨空间串读
+            query = query.filter(self.model.workspace_id == None)
         return query.first()
 
     def create(self, db: Session, obj_in: CategoryCreate, user_id: int, workspace_id: Optional[int] = None) -> Category:
@@ -42,9 +45,13 @@ class CRUDCategory(CRUDBase[Category, CategoryCreate, CategoryUpdate]):
             return None
 
         if move_to_category_id:
-            target_category = db.query(self.model).filter(
-                self.model.id == move_to_category_id
-            ).first()
+            # 任务迁移目标分类必须在同一空间（workspace / 个人），防止跨空间串迁
+            target_q = db.query(self.model).filter(self.model.id == move_to_category_id)
+            if workspace_id is not None:
+                target_q = target_q.filter(self.model.workspace_id == workspace_id)
+            else:
+                target_q = target_q.filter(self.model.workspace_id == None)
+            target_category = target_q.first()
             if target_category:
                 for task in category.tasks:
                     task.category_id = move_to_category_id

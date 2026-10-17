@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse
-from typing import List, Optional
+from typing import Optional
 from app.db.session import get_db
 from app.crud.statistics import statistics
 from app.utils.excel_exporter import export_tasks_to_excel
 from app.api.v1.task import get_current_user_id
+from app.services.cache_service import CacheService
 
 router = APIRouter()
 
@@ -16,8 +17,26 @@ async def get_overview(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    """获取概览统计 - 面试考点：聚合查询接口"""
-    return statistics.get_overview(db, user_id, workspace_id)
+    """获取概览统计 - 带缓存优化（stale-while-revalidate）"""
+    # 尝试从缓存读取
+    cached = CacheService.get_stats(user_id, workspace_id)
+    if cached is not None:
+        # 后台异步刷新缓存（不阻塞响应）
+        def _refresh(db_session, uid, wid):
+            try:
+                return statistics.get_overview(db_session, uid, wid)
+            except Exception:
+                return None
+
+        # 仅在缓存即将过期时触发异步刷新（TTL 过半后）
+        CacheService.refresh_stats_async(user_id, workspace_id, _refresh)
+        return cached
+
+    # 缓存未命中，查询DB
+    result = statistics.get_overview(db, user_id, workspace_id)
+    # 回填缓存
+    CacheService.set_stats(user_id, result, workspace_id)
+    return result
 
 
 @router.get("/category")

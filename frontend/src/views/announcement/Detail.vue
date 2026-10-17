@@ -5,7 +5,7 @@
       <el-tag v-if="detail.is_pinned" type="danger" size="small">置顶</el-tag>
       <el-tag v-if="detail.is_must_read" type="warning" size="small" style="margin-left:8px">必读</el-tag>
       <h2 style="margin:16px 0 8px">{{ detail.title }}</h2>
-      <div class="meta">{{ detail.creator_name }} · {{ detail.created_at }} · {{ detail.type }}</div>
+      <div class="meta">{{ detail.creator_name }} · {{ formatTime(detail.created_at) }} · {{ detail.type }}</div>
       <el-divider />
       <div class="content" v-html="detail.content"></div>
 
@@ -23,6 +23,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { announcementApi } from '@/api/announcement'
+import { formatTime } from '@/utils/format'
 const route = useRoute()
 const detail = ref(null); const readStatus = ref({ read_count: 0, read_users: [] }); const loading = ref(false)
 
