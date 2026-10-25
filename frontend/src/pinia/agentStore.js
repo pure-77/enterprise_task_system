@@ -164,6 +164,15 @@ export const useAgentStore = defineStore('agent', {
         {
           onToolCall: (toolCalls) => {
             this.messages[assistantIdx].tool_calls = toolCalls
+            // 完整 tool_calls 到达后，流式期间提前展示的确认卡片由统一渲染管线接管
+            this.messages[assistantIdx].pending_confirms = []
+          },
+          onConfirmRequest: (data) => {
+            // 危险操作待确认：流式期间即时展示确认卡片（不等 done）
+            if (!this.messages[assistantIdx].pending_confirms) {
+              this.messages[assistantIdx].pending_confirms = []
+            }
+            this.messages[assistantIdx].pending_confirms.push(data)
           },
           onMessage: (chunk) => {
             this.messages[assistantIdx].content += chunk

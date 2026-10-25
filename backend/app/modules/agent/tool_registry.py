@@ -71,6 +71,15 @@ _TOOL_META: dict[str, dict] = {
 
     # statistics
     "get_statistics_overview": {"icon": "📊", "action": "查询统计", "danger_level": "safe"},
+
+    # summary（数据洞察：总结 + 图表）
+    "summarize_today_work":    {"icon": "📝", "action": "总结今日工作", "danger_level": "safe"},
+    "summarize_week_progress": {"icon": "📈", "action": "总结本周进展", "danger_level": "safe"},
+    "summarize_task_status":   {"icon": "📊", "action": "统计任务分布", "danger_level": "safe"},
+    "generate_chart":          {"icon": "📊", "action": "生成图表", "danger_level": "safe"},
+
+    # knowledge（RAG 知识库语义检索）
+    "search_knowledge":        {"icon": "📚", "action": "知识库检索", "danger_level": "safe"},
 }
 
 

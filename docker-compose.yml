@@ -37,6 +37,7 @@ services:
       - redis
     volumes:
       - ./backend/uploads:/app/uploads
+      - ./backend/data:/app/data   # Chroma 向量库数据持久化（RAG 知识库）
 
 volumes:
   mysql_data:

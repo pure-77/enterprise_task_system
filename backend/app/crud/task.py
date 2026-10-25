@@ -15,6 +15,9 @@ class TaskCRUD:
         tags = task_in.tags or []
         assignee_ids = task_in.assignee_ids or []
         task_data = task_in.model_dump(exclude={'tags', 'assignee_ids'})
+        # 防御：category_id 为 0/空时归一为 None（categories 表无 id=0，写入会触发外键约束失败）
+        if not task_data.get('category_id'):
+            task_data['category_id'] = None
 
         db_task = Task(**task_data, user_id=user_id)
         db.add(db_task)
@@ -245,6 +248,11 @@ class TaskCRUD:
     def update(self, db: Session, db_task: Task, task_in: TaskUpdate) -> Task:
         """更新任务"""
         update_data = task_in.model_dump(exclude_unset=True)
+
+        # 防御：category_id 为 0 时归一为 None（前端 Number(null)=0 的历史 bug 会提交 0，
+        # categories 表无 id=0，写入会触发外键约束失败 tasks_ibfk_2）
+        if 'category_id' in update_data and not update_data['category_id']:
+            update_data['category_id'] = None
 
         # 处理标签
         if 'tags' in update_data:

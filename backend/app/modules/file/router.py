@@ -3,7 +3,8 @@ import os
 import hmac
 import hashlib
 import time
-from fastapi import APIRouter, Depends, Query, UploadFile, File as FastAPIFile, HTTPException
+import logging
+from fastapi import APIRouter, Depends, Query, UploadFile, File as FastAPIFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from app.db.session import get_db
@@ -16,6 +17,8 @@ from app.modules.file.schemas import FolderCreate, FileMove
 from app.modules.file.storage import storage
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 # ===== Folder =====
@@ -74,6 +77,7 @@ async def get_files(
 
 @router.post("/upload", status_code=201)
 async def upload_file(
+    background_tasks: BackgroundTasks,
     workspace_id: int = Query(None),
     folder_id: int = Query(None),
     file: UploadFile = FastAPIFile(...),
@@ -89,11 +93,20 @@ async def upload_file(
     file.file.seek(0)  # 重置文件指针
 
     f = await file_crud.upload_file(db, workspace_id, current_user.id, file, folder_id)
+
+    # RAG：后台异步索引进知识库（失败不影响上传结果）
+    try:
+        from app.modules.knowledge.indexer import index_source
+        background_tasks.add_task(index_source, "file", f.id)
+    except Exception as e:
+        logger.warning(f"知识库索引进队失败（不影响上传）: {e}")
+
     return {"id": f.id, "name": f.name, "size": f.size, "mime_type": f.mime_type}
 
 
 @router.delete("/{file_id}")
 async def delete_file(
+    background_tasks: BackgroundTasks,
     file_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -101,6 +114,14 @@ async def delete_file(
     f = file_crud.get_file(db, file_id)
     get_workspace_member(f.workspace_id, current_user.id, db)
     file_crud.delete_file(db, file_id)
+
+    # RAG：后台异步清理该文件的向量与分片元数据
+    try:
+        from app.modules.knowledge.indexer import delete_source_index
+        background_tasks.add_task(delete_source_index, "file", file_id)
+    except Exception as e:
+        logger.warning(f"知识库索引清理入队失败（不影响删除）: {e}")
+
     return {"message": "文件已删除"}
 
 

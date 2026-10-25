@@ -31,6 +31,8 @@ def register_all_tools():
     from app.modules.agent.tools.notification_tools import register_notification_tools, register_announcement_tools
     from app.modules.agent.tools.attendance_tools import register_attendance_tools
     from app.modules.agent.tools.misc_tools import register_approval_tools, register_statistics_tools, register_org_tools, register_file_tools
+    from app.modules.agent.tools.summary_tools import register_summary_tools
+    from app.modules.agent.tools.knowledge_tools import register_knowledge_tools
 
     _safe_register("im", register_im_tools)
     _safe_register("notification", register_notification_tools)
@@ -40,5 +42,9 @@ def register_all_tools():
     _safe_register("statistics", register_statistics_tools)
     _safe_register("org", register_org_tools)
     _safe_register("file", register_file_tools)
+    # Phase 3 — 数据洞察（一键总结 + 图表生成）
+    _safe_register("summary", register_summary_tools)
+    # Phase 4 — 知识库语义检索（RAG）
+    _safe_register("knowledge", register_knowledge_tools)
 
     logger.info("[Agent] 工具注册流程完成 ✅")

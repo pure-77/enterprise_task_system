@@ -560,7 +560,8 @@ const handleSubmit = async () => {
 
     const submitData = {
       ...formData.value,
-      category_id: Number(formData.value.category_id)
+      // 无分类时保持 null；Number(null)=0 会导致后端外键约束失败（categories 无 id=0）
+      category_id: formData.value.category_id ? Number(formData.value.category_id) : null
     }
 
     // assignee_ids → assignee_id（单人）+ assignee_ids（多人）

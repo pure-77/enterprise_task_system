@@ -54,5 +54,6 @@ def init_db():
     from app.modules.attendance.models import AttendanceRule, AttendanceRecord, AttendanceStats  # noqa: F401
     from app.modules.announcement.models import Announcement, AnnouncementRead  # noqa: F401
     from app.modules.file.models import FileFolder, File  # noqa: F401
+    from app.modules.knowledge.models import KnowledgeDocument, KnowledgeChunk  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

@@ -2,7 +2,8 @@
 import os
 import json
 import uuid
-from fastapi import APIRouter, Depends, Query, UploadFile, File as FastAPIFile
+import logging
+from fastapi import APIRouter, Depends, Query, UploadFile, File as FastAPIFile, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.security import get_current_user
@@ -16,6 +17,8 @@ from app.modules.im.storage import storage, is_image, ALLOWED_IMAGE_EXTENSIONS, 
 from app.api.v1.websocket import publish_im_message, publish_read_status
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 会话管理 ====================
@@ -124,6 +127,7 @@ async def get_messages(
 async def send_message(
     conv_id: int,
     msg_in: MessageCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -160,6 +164,14 @@ async def send_message(
         publish_im_message(conv_id, result)
     except Exception:
         pass
+
+    # RAG：文本消息后台异步索引进知识库（仅文本；失败不影响发送）
+    if msg_type == MessageType.TEXT:
+        try:
+            from app.modules.knowledge.indexer import index_source
+            background_tasks.add_task(index_source, "im", msg.id)
+        except Exception as e:
+            logger.warning(f"消息索引进队失败（不影响发送）: {e}")
 
     return result
 
@@ -200,6 +212,7 @@ async def mark_read(
 @router.put("/messages/{msg_id}/recall")
 async def recall_message(
     msg_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -218,6 +231,13 @@ async def recall_message(
         publish_im_message(msg.conversation_id, recall_data)
     except Exception:
         pass
+
+    # RAG：后台异步清理该消息的向量与分片元数据
+    try:
+        from app.modules.knowledge.indexer import delete_source_index
+        background_tasks.add_task(delete_source_index, "im", msg_id)
+    except Exception as e:
+        logger.warning(f"消息索引清理入队失败（不影响撤回）: {e}")
 
     return {"message": "消息已撤回"}
 

@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -28,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import SessionLocal
+from app.db.redis_client import get_redis
 from app.models.user import User
 from app.models.agent_audit import AgentAuditLog
 from app.modules.agent.llm_provider import get_llm, DeepSeekProvider
@@ -37,6 +39,11 @@ from app.modules.agent.schemas import AgentToolCall, AgentChatResponse
 from app.modules.agent.session_service import AgentSessionService
 
 logger = logging.getLogger("agent.service")
+
+# 危险操作挂起确认的 Redis TTL（用户需在有效期内确认/取消，过期自动失效）
+_CONFIRM_TTL_SECONDS = 300
+# 危险操作挂起在 Redis 中的 key 前缀（与 router.py 保持一致）
+_CONFIRM_REDIS_PREFIX = "agent:confirm:"
 
 
 # ==================== 意图识别器（轻量版） ====================
@@ -64,12 +71,23 @@ _KEYWORD_ROUTES: list[tuple[list[str], str]] = [
     (["通知", "提醒", "notification", "notif"], "notification"),
     # statistics 模块
     (["统计", "完成率", "趋势", "报表", "overview", "stats"], "statistics"),
+    # summary 模块（数据洞察：总结 + 图表生成；"趋势图/图表"等带"图"字的归这里，纯"趋势"归 statistics）
+    # 注意：不含"日报/周报"——"写周报"是创建任务的内容而非总结意图，单独出现时交给 Level 2 LLM 判断
+    (["总结", "汇总", "进展", "图表", "柱状图", "饼图", "折线图", "趋势图", "盘点一下", "复盘一下"], "summary"),
     # file 模块
     (["文件", "文档", "file", "上传", "下载"], "file"),
     # org 模块
     (["成员", "部门", "同事", "组织", "架构", "org"], "org"),
     # announcement 模块
     (["公告", "通知公告", "announcement"], "announcement"),
+    # knowledge 模块（RAG 知识库语义检索：文件/公告/聊天记录内容）
+    # 注意：不含"资料"单字（"把资料发给张三"是 IM 意图），保留完整检索意图短语（查/搜/找+资料）
+    (["知识库", "资料库", "资料里", "资料中", "文档里", "文件里", "公告里", "聊天里", "聊天记录里",
+      "规章制度",
+      "查资料", "搜资料", "找资料",
+      "查一下资料", "搜一下资料", "找一下资料",
+      "查下资料", "搜下资料", "找下资料",
+      "knowledge"], "knowledge"),
 ]
 
 
@@ -181,9 +199,11 @@ async def _llm_classify_intent(user_message: str) -> Optional[list[str]]:
 - 看通知/提醒 → notification
 - 查审批/请假/报销 → approval
 - 看统计数据 → statistics
+- 今日/本周工作总结、日报周报、把数据画成图表 → summary
 - 找文件/文档 → file
 - 查成员/部门 → org
 - 查公告 → announcement
+- 在文档/公告/聊天记录里找内容、查资料、规章制度 → knowledge
 - 只有一句话包含多个不同操作（复合指令）时才返回多个组，例如"建任务并发消息再约会议"→ task, im, calendar
 - 不确定就回答 general（给全量 tools）
 只输出组名，不要解释。"""
@@ -417,6 +437,74 @@ class AgentService:
                 for tc in message.tool_calls:
                     tool_name = tc.function.name
                     tool_args = tc.function.arguments
+                    parsed_args = json.loads(tool_args) if tool_args else {}
+                    danger_level = ToolRegistry.get_tool_meta(tool_name).get("danger_level", "safe")
+
+                    # ---- P1 方案3：danger 级工具执行前中断，挂起等待用户二次确认 ----
+                    if danger_level == "danger":
+                        thinking_fragments.append(f"⛔ 高风险工具挂起待确认: {tool_name}")
+                        confirm_id = uuid.uuid4().hex[:16]
+                        pending_action = {
+                            "confirm_id": confirm_id,
+                            "session_key": self.session_id or f"user:{self.user.id}",
+                            "user_id": self.user.id,
+                            "workspace_id": self.workspace_id or 0,
+                            "tool_name": tool_name,
+                            "tool_args": parsed_args,
+                            "status": "pending",
+                            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                        try:
+                            get_redis().setex(
+                                f"{_CONFIRM_REDIS_PREFIX}{confirm_id}",
+                                _CONFIRM_TTL_SECONDS,
+                                json.dumps(pending_action, ensure_ascii=False),
+                            )
+                            # 实时推送确认请求（前端可即时渲染确认卡片）
+                            yield {"event": "confirm_request", "data": {
+                                "confirm_id": confirm_id,
+                                "tool_name": tool_name,
+                                "tool_args": parsed_args,
+                                "meta": ToolRegistry.get_tool_meta(tool_name),
+                                "expires_in_seconds": _CONFIRM_TTL_SECONDS,
+                            }}
+                            exec_result = json.dumps({
+                                "success": False,
+                                "pending_confirmation": True,
+                                "confirm_id": confirm_id,
+                                "tool_name": tool_name,
+                                "expires_in_seconds": _CONFIRM_TTL_SECONDS,
+                                "message": "该操作为高风险操作，已暂停并等待用户在确认卡片上确认。"
+                                           "请告知用户：确认后才会执行；用户取消或超时未处理则不会执行。",
+                            }, ensure_ascii=False)
+                        except Exception as e:
+                            # Redis 不可用 → 无法挂起确认流程，出于安全原则拒绝执行危险操作
+                            logger.error(f"[Agent] 危险操作挂起失败（Redis 不可用），拒绝执行 {tool_name}: {e}")
+                            exec_result = json.dumps({
+                                "success": False,
+                                "error": "确认服务暂不可用（存储未连接），出于安全考虑该高风险操作未执行，请稍后重试",
+                            }, ensure_ascii=False)
+
+                        tc_record = AgentToolCall(
+                            tool_name=tool_name,
+                            arguments=parsed_args,
+                            result=exec_result[:4000],
+                            success=False,
+                        )
+                        tool_calls_record.append(tc_record)
+                        yield {"event": "tool_call_done", "data": {
+                            "tool_name": tool_name,
+                            "iteration": iteration,
+                            "success": False,
+                            "tool_call": tc_record.model_dump(),
+                        }}
+                        # 回喂 LLM：让它组织语言告知用户需要确认（而不是继续盲目推进）
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": exec_result,
+                        })
+                        continue
 
                     thinking_fragments.append(f"🔧 执行工具: {tool_name}")
 
@@ -444,7 +532,7 @@ class AgentService:
                     tc_record = AgentToolCall(
                         tool_name=tool_name,
                         arguments=json.loads(tool_args) if tool_args else {},
-                        result=exec_result[:2000],  # 截断太长的结果（保留更多上下文便于审计）
+                        result=exec_result[:4000],  # 截断太长的结果（4000 以容纳 ECharts option 图表配置）
                         success=is_success,
                     )
                     tool_calls_record.append(tc_record)

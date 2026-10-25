@@ -18,6 +18,7 @@ from app.modules.agent.schemas import (
     AgentChatRequest,
     AgentChatResponse,
     PlanConfirmRequest,
+    ActionConfirmRequest,
 )
 from app.modules.agent.service import AgentService
 from app.modules.agent.tool_registry import ToolRegistry
@@ -147,6 +148,9 @@ async def agent_chat_stream(
                 elif ev == "message":
                     # 逐字符自然语言回复，直接推
                     yield f"event: message\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                elif ev == "confirm_request":
+                    # 危险操作待确认：实时透传给前端渲染确认卡片
+                    yield f"event: confirm_request\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
                 elif ev == "done":
                     # done 前先推聚合的 tool_call 列表（兼容原前端协议）
                     if collected_tool_calls:
@@ -461,3 +465,141 @@ async def cancel_plan(
     r.setex(f"{_PLAN_REDIS_PREFIX}{plan_id}", _PLAN_CONFIRMED_TTL,
             json.dumps(plan, ensure_ascii=False))
     return {"success": True, "plan_id": plan_id, "message": "计划已取消，未创建任何任务"}
+
+
+# ==================== 危险操作二次确认（danger 工具中断恢复）====================
+
+# 与 service.py 的挂起逻辑保持一致
+_CONFIRM_REDIS_PREFIX = "agent:confirm:"
+_CONFIRM_DONE_TTL = 600  # 终态保留 10 分钟（前端展示"已确认/已取消"）
+
+
+def _load_pending_action(confirm_id: str, current_user: User) -> dict:
+    """从 Redis 读取待确认的危险操作并做归属/状态校验，失败抛对应 HTTPException"""
+    try:
+        r = get_redis()
+    except Exception as e:
+        logger.warning(f"[AgentConfirm] Redis 不可用: {e}")
+        raise HTTPException(status_code=503, detail="确认服务暂不可用（Redis 未连接），请稍后重试")
+
+    raw = r.get(f"{_CONFIRM_REDIS_PREFIX}{confirm_id}")
+    if not raw:
+        raise HTTPException(status_code=404, detail="确认请求不存在或已过期（仅保留 5 分钟），该操作未执行")
+    try:
+        action = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="确认数据损坏，该操作未执行")
+
+    if action.get("user_id") != current_user.id:
+        # 不暴露他人确认请求是否存在
+        raise HTTPException(status_code=403, detail="无权操作该确认请求")
+    if action.get("status") != "pending":
+        status_text = {"confirmed": "该操作已确认并执行", "cancelled": "该操作已取消"}.get(
+            action.get("status"), "该确认请求已处理")
+        raise HTTPException(status_code=409, detail=status_text)
+    return action
+
+
+def _writeback_conversation(
+    db: Session,
+    current_user: User,
+    workspace_id,
+    session_id,
+    title: str,
+    user_echo: str,
+    assistant_msg: str,
+):
+    """把确认/取消结果回写到同一会话（MySQL 历史 + Redis 短期记忆），失败不影响主流程"""
+    ws0 = workspace_id or 0
+    session_key = session_id or f"ws-{ws0}-user-{current_user.id}"
+    try:
+        db_session = AgentSessionService.get_or_create_session(
+            db, user=current_user, workspace_id=ws0,
+            session_key=session_key, title=title[:20] or "操作确认",
+        )
+        AgentSessionService.append_message(db, db_session, role="user", content=user_echo)
+        AgentSessionService.append_message(db, db_session, role="assistant", content=assistant_msg)
+        AgentMemory(ws0, current_user.id, session_key).save(user_echo, assistant_msg)
+    except Exception as e:
+        logger.warning(f"[AgentConfirm] 会话回写失败（不影响操作结果）: {e}")
+
+
+@router.post("/confirm")
+async def confirm_action(
+    request: ActionConfirmRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    危险操作二次确认 → 确认后执行被挂起的 danger 级工具
+
+    Agent 对话中遇到 danger 级工具（删除文件/驳回审批/删除日程等）时不直接执行，
+    而是挂起到 Redis 并推送确认卡片；用户在此确认后才真正执行。
+    执行复用 ToolRegistry.execute（danger 级不重试，杜绝重复副作用）。
+    """
+    action = _load_pending_action(request.confirm_id, current_user)
+    tool_name = action["tool_name"]
+    meta = ToolRegistry.get_tool_meta(tool_name)
+    action_label = meta.get("action", tool_name)
+    handled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _mark_terminal(status_value: str, extra: dict = None):
+        """标记终态（保留 10 分钟供前端展示），Redis 失败不影响操作结果"""
+        try:
+            action["status"] = status_value
+            action["handled_at"] = handled_at
+            if extra:
+                action.update(extra)
+            get_redis().setex(
+                f"{_CONFIRM_REDIS_PREFIX}{request.confirm_id}",
+                _CONFIRM_DONE_TTL,
+                json.dumps(action, ensure_ascii=False),
+            )
+        except Exception as e:
+            logger.warning(f"[AgentConfirm] 更新终态失败（不影响操作结果）: {e}")
+
+    # ---- 分支 1：用户取消 ----
+    if not request.approved:
+        _mark_terminal("cancelled")
+        summary = f"已取消「{action_label}」，未执行任何操作。"
+        user_echo = f"❌ 取消高风险操作：{action_label}"
+        _writeback_conversation(
+            db, current_user, action.get("workspace_id"), request.session_id,
+            user_echo, user_echo, summary,
+        )
+        return {
+            "success": True,
+            "confirm_id": request.confirm_id,
+            "tool_name": tool_name,
+            "cancelled": True,
+            "summary": summary,
+        }
+
+    # ---- 分支 2：用户确认 → 执行被挂起的工具（写操作不重试）----
+    context = {"user": current_user, "workspace_id": action.get("workspace_id")}
+    result_raw = await ToolRegistry.execute(tool_name, action.get("tool_args") or {}, context)
+    try:
+        result = json.loads(result_raw or "{}")
+    except json.JSONDecodeError:
+        result = {"success": False, "error": "执行结果解析失败"}
+    ok = bool(result.get("success"))
+
+    _mark_terminal("confirmed", {"exec_success": ok})
+    if ok:
+        summary = f"✅ 已执行「{action_label}」：{result.get('message') or '操作成功'}"
+    else:
+        summary = f"❌ 执行「{action_label}」失败：{result.get('error') or '未知错误'}"
+    user_echo = f"✅ 确认执行高风险操作：{action_label}"
+    _writeback_conversation(
+        db, current_user, action.get("workspace_id"), request.session_id,
+        user_echo, user_echo, summary,
+    )
+
+    return {
+        "success": ok,
+        "confirm_id": request.confirm_id,
+        "tool_name": tool_name,
+        "cancelled": False,
+        "result": result,
+        "summary": summary,
+    }

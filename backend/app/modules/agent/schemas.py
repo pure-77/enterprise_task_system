@@ -54,3 +54,12 @@ class PlanConfirmRequest(BaseModel):
         None,
         description="勾选要创建的任务下标（对应 plan_tasks 返回 tasks 中的 index）；不传或 null 表示全部",
     )
+
+
+# ==================== 危险操作二次确认（danger 工具中断）模型 ====================
+
+class ActionConfirmRequest(BaseModel):
+    """危险操作确认请求：danger 级工具执行前被挂起，用户在前端卡片确认/取消后提交"""
+    confirm_id: str = Field(..., description="待确认操作 ID（service 挂起危险工具时生成）")
+    approved: bool = Field(..., description="true=确认执行；false=取消，不执行")
+    session_id: Optional[str] = Field(None, description="当前会话 key（用于把确认结果回写到同一会话）")

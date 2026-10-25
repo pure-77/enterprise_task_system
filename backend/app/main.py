@@ -56,6 +56,7 @@ from app.modules.attendance.router import router as attendance_router
 from app.modules.announcement.router import router as announcement_router
 from app.modules.file.router import router as file_router
 from app.modules.agent.router import router as agent_router
+from app.modules.knowledge.router import router as knowledge_router
 
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(task_router, prefix="/api/v1")
@@ -69,6 +70,8 @@ app.include_router(announcement_router, prefix="/api/v1/announcements")
 app.include_router(file_router, prefix="/api/v1/files")
 # Agent 路由 — 企业办公智能助手
 app.include_router(agent_router, prefix="/api/v1/agent")
+# 知识库路由 — RAG 索引运维（重建 / 统计）
+app.include_router(knowledge_router, prefix="/api/v1/knowledge")
 
 # 挂载静态文件服务 - 用于提供头像等静态文件
 import os

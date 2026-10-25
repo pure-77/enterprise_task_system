@@ -56,6 +56,19 @@ class Settings(BaseSettings):
     AGENT_MAX_TOOL_ITERATIONS: int = 10     # 单次对话最大工具调用轮次（防死循环）
     AGENT_MEMORY_MAX_ROUNDS: int = 20        # 对话记忆保留最近 N 轮
     AGENT_MEMORY_TTL_SECONDS: int = 86400    # 记忆 Redis TTL（秒），默认 24 小时
+
+    # ==================== 知识库 / RAG 配置 ====================
+    KB_ENABLED: bool = True
+    CHROMA_DIR: str = "data/chroma"          # 相对 backend/ 目录（解析为绝对路径）
+    KB_COLLECTION: str = "knowledge_chunks"  # Chroma 集合名
+    EMBEDDING_MODEL: str = "text-embedding-v4"  # 千问 DashScope 向量模型
+    EMBEDDING_DIM: int = 1024                # 向量维度
+    EMBEDDING_BATCH_SIZE: int = 10           # DashScope 单请求条数上限（保守取 10）
+    KB_CHUNK_SIZE: int = 500                 # 切片窗口（中文字符）
+    KB_CHUNK_OVERLAP: int = 80               # 切片重叠
+    KB_TOP_K: int = 6                        # 检索返回片段数
+    KB_SNIPPET_LEN: int = 400                # 返回给 LLM 的单片段截断长度
+    KB_WRITE_LOCK_TTL: int = 60              # Chroma 写锁（Redis）超时（秒）
     AGENT_SYSTEM_PROMPT: str = """你是「企业办公智能助手」，一个帮助用户操作企业协作平台的 AI Agent。
 
 ## 你的能力范围
@@ -69,6 +82,7 @@ class Settings(BaseSettings):
 - 文件管理：上传、搜索、预览文件
 - 组织架构：查询成员、部门信息
 - 数据统计：概览、趋势、完成率
+- 知识检索：语义检索工作区文件、公告、聊天记录中的内容（RAG）
 
 ## 工作原则
 1. **用户意图优先**：理解用户自然语言的真实意图，选择最合适的工具
@@ -94,6 +108,25 @@ class Settings(BaseSettings):
    **严禁在用户确认前自行调用 create_task**（这是确认环节的必要等待，不属于追问缺失参数）
 4. 计划中的截止时间必须结合注入的当前时间推算成具体的 YYYY-MM-DD HH:mm；
    负责人只在用户明确提及时填写 assignee_name，不确定就留空（默认负责人为用户自己）
+
+## 危险操作规则
+1. 删除文件、驳回审批、删除日程等高风险操作会被系统暂停并要求用户在确认卡片上二次确认
+2. 当你收到含有 pending_confirmation 的工具结果时，只需明确告知用户"该操作已暂停，请在确认卡片上确认或取消"，
+   不要重复调用该工具，也不要声称操作已完成
+
+## 数据洞察规则（总结 + 图表）
+1. 用户问"今天干了什么 / 总结一下今天 / 今日进展" → 调用 summarize_today_work，并用自然语言组织成简洁的日报式总结
+2. 用户问"本周进展 / 这周做得怎么样 / 周报素材" → 调用 summarize_week_progress
+3. 用户问"任务都什么状态 / 待办多少 / 优先级分布" → 调用 summarize_task_status（可按用户指定范围传 scope）
+4. 用户要"图表 / 柱状图 / 饼图 / 折线图"时：先调对应的查询或总结工具拿到数据，
+   再调 generate_chart 把数据画出来；series 中每个 data 数组的长度必须与 categories 完全一致，
+   饼图只传一个 series；图表生成后只需一句话简述图表展示了什么，不要复述全部数值
+
+## 知识库检索规则（search_knowledge）
+1. 用户问「文档里/公告里/聊天记录里提到过什么」「有没有相关规定」「帮我查一下资料」等
+   非结构化内容问题时 → 调用 search_knowledge（个人空间没有知识库内容，工具会明确提示）
+2. 返回 items 中每条的 citation 是引用标记（如〔文件《员工手册》#12〕），回答时必须在对应结论处标注引用
+3. count == 0 时必须如实回答"资料里没找到相关内容"，严禁编造不存在的资料内容
 
 ## 示例
 示例1（复合指令）：

@@ -99,6 +99,10 @@ export const agentApi = {
               case 'tool_call':
                 handlers.onToolCall?.(JSON.parse(eventData))
                 break
+              case 'confirm_request':
+                // 危险操作待确认：流式期间实时推送（done 前即可渲染确认卡片）
+                handlers.onConfirmRequest?.(JSON.parse(eventData))
+                break
               case 'message':
                 handlers.onMessage?.(JSON.parse(eventData))
                 break
@@ -211,6 +215,23 @@ export const agentApi = {
     return request({
       url: `/agent/plans/${planId}/cancel`,
       method: 'post'
+    })
+  },
+
+  // ==================== 危险操作二次确认（danger 工具） ====================
+
+  /**
+   * 确认/取消被挂起的危险操作
+   * @param {Object} data
+   * @param {string} data.confirm_id - 待确认操作 ID
+   * @param {boolean} data.approved - true=确认执行；false=取消
+   * @param {string} [data.session_id] - 当前会话 key（结果回写同一会话）
+   */
+  confirmAction: (data) => {
+    return request({
+      url: '/agent/confirm',
+      method: 'post',
+      data
     })
   }
 }

@@ -172,6 +172,57 @@
                   </div>
                 </template>
 
+                <!-- 危险操作确认卡片（产品级交互，所有用户可见，与开发者模式无关） -->
+                <template v-for="cf in confirmCards(msg)" :key="`cf-${idx}-${cf.key}`">
+                  <div class="confirm-card" :class="cf.status">
+                    <div class="confirm-header">
+                      <span class="confirm-icon">⚠️</span>
+                      <span class="confirm-title">高风险操作确认</span>
+                      <span class="confirm-danger-tag">DANGER</span>
+                    </div>
+                    <div class="confirm-body">
+                      <div class="confirm-action-line">
+                        <span class="cf-tool-icon">{{ cf.meta?.icon || '🔧' }}</span>
+                        <span class="cf-tool-action">{{ cf.meta?.action || cf.tool_name }}</span>
+                      </div>
+                      <div v-if="parseToolArgs({ tool_name: cf.tool_name, arguments: cf.args })" class="confirm-args">
+                        {{ parseToolArgs({ tool_name: cf.tool_name, arguments: cf.args }) }}
+                      </div>
+                      <div class="confirm-warn-text">此操作不可恢复，请确认无误后再执行</div>
+                    </div>
+                    <!-- 待确认：确认 / 取消 -->
+                    <div v-if="cf.status === 'pending'" class="confirm-actions">
+                      <button
+                        class="confirm-btn danger"
+                        :disabled="!!confirmBusy[cf.confirm_id]"
+                        @click="handleActionDecision(cf, true)"
+                      >
+                        {{ confirmBusy[cf.confirm_id] === 'confirm' ? '执行中...' : '确认执行' }}
+                      </button>
+                      <button
+                        class="confirm-btn ghost"
+                        :disabled="!!confirmBusy[cf.confirm_id]"
+                        @click="handleActionDecision(cf, false)"
+                      >
+                        {{ confirmBusy[cf.confirm_id] === 'cancel' ? '取消中...' : '取消' }}
+                      </button>
+                      <span class="confirm-hint">5 分钟内有效，超时自动失效</span>
+                    </div>
+                    <!-- 终态 -->
+                    <div v-else-if="cf.status === 'confirmed'" class="confirm-final confirmed">{{ cf.summary || '✅ 已确认并执行' }}</div>
+                    <div v-else-if="cf.status === 'cancelled'" class="confirm-final cancelled">{{ cf.summary || '已取消，未执行任何操作' }}</div>
+                    <div v-else-if="cf.status === 'expired'" class="confirm-final expired">确认已过期（超过 5 分钟未处理），该操作未执行</div>
+                  </div>
+                </template>
+
+                <!-- 图表卡片（generate_chart 产物，所有用户可见） -->
+                <template v-for="cc in chartCards(msg)" :key="`chart-${idx}-${cc.ti}`">
+                  <div class="chart-card">
+                    <div class="chart-title">📊 {{ cc.chart.title }}</div>
+                    <div :id="`chart-body-${idx}-${cc.ti}`" class="chart-body"></div>
+                  </div>
+                </template>
+
                 <!-- 工具调用卡片（仅在开发者模式下显示，符合"不向用户暴露工具调用"的偏好） -->
                 <div v-if="showToolCalls && msg.tool_calls?.length" class="tool-cards">
                   <div class="tool-cards-title">
@@ -266,12 +317,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAgentStore } from '@/pinia/agentStore'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
 import { agentApi } from '@/api/agent'
 import { renderMarkdown } from '@/utils/markdown'
+import * as echarts from 'echarts'
 import {
   ChatLineRound, Plus, Delete, Connection, CircleCheckFilled,
   CircleCloseFilled, Promotion, User, MagicStick
@@ -297,8 +349,8 @@ const quickPrompts = [
   '你好，你是谁？',
   '帮我创建一个任务【写周报】，明天下午6点截止',
   '帮我规划一下下周五的产品上线准备',
-  '我今天和明天有什么会议？',
-  '本月任务完成率多少？',
+  '总结一下我今天的工作',
+  '我今天的任务状态分布，画个饼图',
   '有多少未读通知？',
 ]
 
@@ -432,6 +484,8 @@ function isThinkingMsg(msg) {
     && !msg.content
     && !msg.error
     && planCards(msg).length === 0
+    && confirmCards(msg).length === 0
+    && chartCards(msg).length === 0
     && !(showToolCalls.value && msg.tool_calls?.length)
 }
 
@@ -537,6 +591,173 @@ async function handleCancelPlan(cardKey, tc) {
     planBusy.value[cardKey] = null
   }
 }
+
+// ==================== 危险操作确认卡片（danger 工具二次确认） ====================
+
+// 每张确认卡片的请求中状态：{ [confirm_id]: 'confirm' | 'cancel' | null }
+const confirmBusy = ref({})
+
+/** 从 tool_call 结果中解析危险操作挂起对象，非 pending_confirmation 返回 null */
+function parseConfirmResult(tc) {
+  if (!tc?.result) return null
+  let obj = null
+  try {
+    obj = typeof tc.result === 'string' ? JSON.parse(tc.result) : tc.result
+  } catch { return null }
+  if (!obj || typeof obj !== 'object' || !obj.pending_confirmation || !obj.confirm_id) return null
+  return obj
+}
+
+/**
+ * 提取一条 assistant 消息中的全部危险操作确认卡片。
+ * 两个数据源（同一确认流程的不同阶段，互斥出现）：
+ * 1. msg.tool_calls 中挂起的 danger 工具（流式 done 后 & 历史会话）
+ * 2. msg.pending_confirms（流式期间 SSE confirm_request 实时推送，tool_calls 未到时提前展示）
+ */
+function confirmCards(msg) {
+  const cards = []
+  ;(msg.tool_calls || []).forEach((tc, ti) => {
+    const c = parseConfirmResult(tc)
+    if (c) {
+      cards.push({
+        key: `tc-${ti}`, tc,
+        confirm_id: c.confirm_id,
+        tool_name: tc.tool_name,
+        args: tc.arguments,
+        meta: tc.meta,
+        status: c.status || 'pending',
+        summary: c.summary || null,
+      })
+    }
+  })
+  ;(msg.pending_confirms || []).forEach((pc, pi) => {
+    cards.push({
+      key: `pc-${pi}`, pc,
+      confirm_id: pc.confirm_id,
+      tool_name: pc.tool_name,
+      args: pc.tool_args,
+      meta: pc.meta,
+      status: pc.status || 'pending',
+      summary: pc.summary || null,
+    })
+  })
+  return cards
+}
+
+/** 确认后就地把卡片数据源更新为终态（与 plan 卡片同款模式，刷新后由后端会话记录兜底） */
+function _markConfirmLocal(card, next, summary, execSuccess) {
+  if (card.tc) {
+    let parsed = {}
+    try { parsed = typeof card.tc.result === 'string' ? JSON.parse(card.tc.result) : (card.tc.result || {}) } catch { /* 忽略 */ }
+    card.tc.result = JSON.stringify({ ...parsed, status: next, summary })
+    card.tc.success = next === 'cancelled' ? true : !!execSuccess
+  } else if (card.pc) {
+    card.pc.status = next
+    card.pc.summary = summary
+    card.pc.exec_success = execSuccess
+  }
+}
+
+/** 根据 409/404 错误文案把确认卡片就地同步为终态（刷新页面后点旧卡片的场景） */
+function syncConfirmTerminal(card, detail) {
+  let next = null
+  if (/已确认|已执行/.test(detail)) next = 'confirmed'
+  else if (/已取消/.test(detail)) next = 'cancelled'
+  else if (/过期|不存在/.test(detail)) next = 'expired'
+  if (next) _markConfirmLocal(card, next, detail, false)
+}
+
+/** 确认 / 取消 危险操作 */
+async function handleActionDecision(card, approved) {
+  if (!card?.confirm_id || confirmBusy.value[card.confirm_id]) return
+  const actionLabel = card.meta?.action || card.tool_name
+  confirmBusy.value[card.confirm_id] = approved ? 'confirm' : 'cancel'
+  try {
+    const res = await agentApi.confirmAction({
+      confirm_id: card.confirm_id,
+      approved,
+      session_id: store.currentSession?.session_key,
+    })
+    const next = approved ? 'confirmed' : 'cancelled'
+    _markConfirmLocal(card, next, res.summary, res.success)
+    // 同步补一对本地消息（后端已持久化同样内容，刷新后历史一致）
+    const userEcho = approved
+      ? `✅ 确认执行高风险操作：${actionLabel}`
+      : `❌ 取消高风险操作：${actionLabel}`
+    store.messages.push({ role: 'user', content: userEcho, timestamp: Date.now() })
+    store.messages.push({ role: 'assistant', content: res.summary, tool_calls: [], timestamp: Date.now() })
+    if (approved) {
+      if (res.success) ElMessage.success(res.summary)
+      else ElMessage.error(res.summary)
+    } else {
+      ElMessage.info('已取消，未执行任何操作')
+    }
+    setTimeout(scrollToBottom, 50)
+  } catch (err) {
+    const detail = pickErrMsg(err)
+    syncConfirmTerminal(card, detail)
+    ElMessage.error(detail)
+  } finally {
+    confirmBusy.value[card.confirm_id] = null
+  }
+}
+
+// ==================== 图表卡片（generate_chart → ECharts 渲染） ====================
+
+/** 从 tool_call 结果中解析图表对象，非 chart 类型返回 null */
+function parseChartCard(tc) {
+  if (!tc?.result) return null
+  let obj = null
+  try {
+    obj = typeof tc.result === 'string' ? JSON.parse(tc.result) : tc.result
+  } catch { return null }
+  if (!obj || typeof obj !== 'object' || obj.result_type !== 'chart' || !obj.option) return null
+  return obj
+}
+
+/** 提取一条 assistant 消息中的全部图表卡片 */
+function chartCards(msg) {
+  return (msg.tool_calls || [])
+    .map((tc, ti) => ({ tc, ti, chart: parseChartCard(tc) }))
+    .filter(x => x.chart)
+}
+
+// ECharts 实例表：domId -> instance（避免重复 init；消息删除时随组件卸载统一 dispose）
+const chartInstances = new Map()
+
+/** 扫描当前消息列表，把未初始化的图表容器挂载 ECharts 并 setOption */
+function renderCharts() {
+  nextTick(() => {
+    store.messages.forEach((msg, idx) => {
+      chartCards(msg).forEach(cc => {
+        const domId = `chart-body-${idx}-${cc.ti}`
+        const dom = document.getElementById(domId)
+        if (!dom) return
+        let inst = chartInstances.get(domId)
+        if (!inst) {
+          inst = echarts.init(dom)
+          chartInstances.set(domId, inst)
+        }
+        // notMerge=true：同一 domId 复用时（如删除消息后下标前移）确保旧配置不残留
+        inst.setOption(cc.chart.option, true)
+      })
+    })
+  })
+}
+
+// 消息变化（流式到达 / 历史加载 / 新图表生成）后重扫图表容器
+watch(() => store.messages, () => renderCharts(), { deep: true })
+
+function handleWindowResize() {
+  chartInstances.forEach(inst => inst.resize())
+}
+
+window.addEventListener('resize', handleWindowResize)
+onUnmounted(() => {
+  window.removeEventListener('resize', handleWindowResize)
+  chartInstances.forEach(inst => inst.dispose())
+  chartInstances.clear()
+})
 
 async function handleSend() {
   if (!canSend.value) return
@@ -1116,6 +1337,84 @@ onMounted(async () => {
 
 .plan-final { font-size: 12.5px; color: var(--text-light); padding: 2px 0; }
 .plan-final.expired { color: #d97706; }
+
+/* ========== 危险操作确认卡片 ========== */
+.confirm-card {
+  margin-bottom: 10px;
+  border: 1px solid #fecaca;
+  border-left: 4px solid var(--error-color);
+  border-radius: var(--radius-md);
+  background: #fff7f7;
+  padding: 12px 14px;
+  max-width: 520px;
+}
+.confirm-card.confirmed { border-left-color: var(--success-color); background: #f6ffed; border-color: #d9f0d0; }
+.confirm-card.cancelled { border-left-color: var(--text-light); background: #fafafa; border-color: var(--border-color); }
+.confirm-card.expired { border-left-color: #d97706; background: #fffbeb; border-color: #fde6c4; }
+
+.confirm-header { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.confirm-icon { font-size: 15px; }
+.confirm-title { font-weight: 600; font-size: 13.5px; color: var(--error-color); }
+.confirm-card.confirmed .confirm-title { color: var(--success-color); }
+.confirm-card.cancelled .confirm-title,
+.confirm-card.expired .confirm-title { color: var(--text-secondary); }
+.confirm-danger-tag {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+  background: var(--error-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.confirm-card.confirmed .confirm-danger-tag,
+.confirm-card.cancelled .confirm-danger-tag,
+.confirm-card.expired .confirm-danger-tag { display: none; }
+
+.confirm-body { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.confirm-action-line { display: flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+.cf-tool-icon { font-size: 15px; }
+.confirm-args { font-size: 12.5px; color: var(--text-secondary); }
+.confirm-warn-text { font-size: 12px; color: var(--error-color); }
+
+.confirm-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.confirm-btn {
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.confirm-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.confirm-btn.danger { background: var(--error-color); color: #fff; }
+.confirm-btn.danger:not(:disabled):hover { opacity: 0.88; }
+.confirm-btn.ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-color); }
+.confirm-btn.ghost:not(:disabled):hover { background: rgba(0,0,0,0.04); }
+.confirm-hint { font-size: 11.5px; color: var(--text-light); }
+
+.confirm-final { font-size: 12.5px; color: var(--text-secondary); padding: 2px 0; white-space: pre-line; }
+.confirm-final.confirmed { color: var(--success-color); }
+.confirm-final.expired { color: #d97706; }
+
+/* ========== 图表卡片 ========== */
+.chart-card {
+  margin-bottom: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: #fff;
+  padding: 12px 14px;
+  max-width: 560px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.chart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.chart-body { width: 100%; height: 280px; }
 
 /* ========== Markdown 渲染 ========== */
 .reply-content { line-height: 1.7; }
