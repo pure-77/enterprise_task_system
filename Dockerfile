@@ -8,6 +8,10 @@
 # ----------------------------- 1. 前端构建 -----------------------------
 FROM node:20-alpine AS frontend-build
 
+# 国内服务器默认走 npmmirror，海外可传 --build-arg NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm config set registry ${NPM_REGISTRY}
+
 WORKDIR /build
 
 COPY frontend/package.json frontend/package-lock.json ./
@@ -31,7 +35,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 国内服务器默认走阿里云镜像，海外可覆盖两个 build-arg
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+RUN sed -i 's|http://deb.debian.org|http://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
         gcc \
         default-libmysqlclient-dev \
         pkg-config \
@@ -39,7 +48,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir \
+        -i ${PIP_INDEX_URL} \
+        --trusted-host ${PIP_TRUSTED_HOST} \
+        -r /app/requirements.txt
 
 COPY backend/ /app/
 COPY --from=frontend-build /build/dist /app/static
