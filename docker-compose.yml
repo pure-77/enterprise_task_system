@@ -1,44 +1,127 @@
-version: '3.8'
+# =============================================================================
+# 生产部署编排：MySQL + Redis + FastAPI（含前端静态站点）+ Celery worker/beat
+#   - 不使用 nginx，前端由 backend 容器内的 FastAPI 直接托管（8001 端口）
+#   - MySQL / Redis 不对外发布端口，仅在容器网络内互通
+#   - 敏感配置（LLM Key、邮箱、JWT）从 backend/.env 读取，compose 里只做必要覆盖
+# =============================================================================
 
 services:
   mysql:
     image: mysql:8.0
+    restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root123456
-      MYSQL_DATABASE: personal_task_system
-    ports:
-      - "3306:3306"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-task_system}
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     volumes:
       - mysql_data:/var/lib/mysql
-    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # 仅调试时可临时放开，生产不要暴露数据库端口
+    # ports:
+    #   - "3306:3306"
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    # ports:
+    #   - "6379:6379"
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: personal-task-system:latest
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # 容器内服务发现：覆盖 .env 里的 localhost 配置
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-root123456}@mysql:3306/${MYSQL_DATABASE:-task_system}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      TZ: Asia/Shanghai
+      # Agent：迁移后默认使用 langgraph；内存 checkpointer 与单 worker 匹配
+      AGENT_ENGINE: langgraph
+      AGENT_MCP_ENABLED: "true"
+      AGENT_CHECKPOINTER: memory
+      AGENT_TRACE_ENABLED: "true"
     ports:
       - "8001:8001"
-    environment:
-      DATABASE_URL: mysql+pymysql://root:root123456@mysql:3306/personal_task_system
-      REDIS_URL: redis://redis:6379/0
-      EMAIL_HOST: ${EMAIL_HOST:-smtp.qq.com}
-      EMAIL_PORT: ${EMAIL_PORT:-587}
-      EMAIL_USERNAME: ${EMAIL_USERNAME:-}
-      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
-      EMAIL_FROM: ${EMAIL_FROM:-}
-      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
     depends_on:
-      - mysql
-      - redis
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
-      - ./backend/uploads:/app/uploads
-      - ./backend/data:/app/data   # Chroma 向量库数据持久化（RAG 知识库）
+      - uploads_data:/app/uploads
+      - chroma_data:/app/data/chroma
+      - trace_logs:/app/logs/agent_trace
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  celery-worker:
+    image: personal-task-system:latest
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_config", "worker", "--loglevel=info", "--concurrency=4"]
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-root123456}@mysql:3306/${MYSQL_DATABASE:-task_system}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      TZ: Asia/Shanghai
+      AGENT_ENGINE: langgraph
+      AGENT_MCP_ENABLED: "true"
+      AGENT_CHECKPOINTER: memory
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+      - chroma_data:/app/data/chroma
+      - trace_logs:/app/logs/agent_trace
+
+  celery-beat:
+    image: personal-task-system:latest
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_config", "beat", "--loglevel=info"]
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-root123456}@mysql:3306/${MYSQL_DATABASE:-task_system}?charset=utf8mb4
+      REDIS_URL: redis://redis:6379/0
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
 
 volumes:
   mysql_data:
   redis_data:
+  uploads_data:
+  chroma_data:
+  trace_logs:

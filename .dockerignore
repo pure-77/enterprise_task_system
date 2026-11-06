@@ -1,9 +1,26 @@
+# 构建上下文为项目根目录，以下内容不进镜像
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+README*
+
+# 后端：运行时数据与本地环境
 backend/.venv
-backend/__pycache__
-backend/**/*.pyc
+backend/.env
+backend/uploads
+backend/data
+backend/logs
+backend/tests
 backend/**/__pycache__
+backend/**/*.pyc
+**/__pycache__
+*.pyc
+
+# 前端：依赖与构建产物（镜像内重新构建）
 frontend/node_modules
 frontend/dist
-.git
-*.pyc
-__pycache__
+frontend/.env
+
+# 文档
+docs
