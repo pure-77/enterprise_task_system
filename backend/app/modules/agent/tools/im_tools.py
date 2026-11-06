@@ -115,7 +115,7 @@ def _handler_list_messages(conv_id: int, limit: int = 20, context: dict = None) 
 
 
 def register_im_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("send_im_message", _schema_send_message(), _handler_send_im_message, group="im")
     ToolRegistry.register("list_im_conversations", _schema_list_conversations(), _handler_list_conversations, group="im")
     ToolRegistry.register("list_im_messages", _schema_list_messages(), _handler_list_messages, group="im")

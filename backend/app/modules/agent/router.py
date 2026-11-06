@@ -21,7 +21,7 @@ from app.modules.agent.schemas import (
     ActionConfirmRequest,
 )
 from app.modules.agent.service import AgentService
-from app.modules.agent.tool_registry import ToolRegistry
+from app.modules.agent.legacy.tool_registry import ToolRegistry
 from app.modules.agent.session_service import AgentSessionService
 
 logger = logging.getLogger("agent.router")
@@ -524,6 +524,91 @@ def _writeback_conversation(
         logger.warning(f"[AgentConfirm] 会话回写失败（不影响操作结果）: {e}")
 
 
+async def _confirm_via_graph(
+    request: ActionConfirmRequest,
+    current_user: User,
+    db: Session,
+    action: dict,
+    mark_terminal,
+    action_label: str,
+) -> dict:
+    """P4: 用 LangGraph 的 Command(resume=...) 恢复被 interrupt 挂起的图。
+
+    与 legacy 分支的区别：工具由 tools 节点的 resume 执行（一次性恢复，写操作不重试），
+    这里只负责恢复、回写会话，并返回与 legacy 完全一致的响应结构。
+    """
+    from app.modules.agent.graph.runner import LangGraphAgentService
+
+    svc = LangGraphAgentService(
+        user=current_user,
+        workspace_id=action.get("workspace_id") or 0,
+        session_id=action.get("session_key"),
+    )
+    resumed = await svc.resume_confirmation(
+        bool(request.approved), thread_id=action.get("thread_id")
+    )
+    tool_name = action["tool_name"]
+
+    # 图状态已失效（服务重启 / 多 worker / Redis 确认记录被清理）
+    if resumed.get("error"):
+        mark_terminal("expired", {"error": resumed["error"]})
+        raise HTTPException(
+            status_code=409,
+            detail="确认状态已失效（服务重启或会话过期），该操作未执行，请重新发起对话",
+        )
+
+    records = resumed.get("tool_records") or []
+    rec = next(
+        (r for r in reversed(records) if r.get("tool_name") == tool_name),
+        None,
+    )
+
+    # ---- 用户取消 ----
+    if not request.approved:
+        mark_terminal("cancelled")
+        summary = f"已取消「{action_label}」，未执行任何操作。"
+        user_echo = f"❌ 取消高风险操作：{action_label}"
+        _writeback_conversation(
+            db, current_user, action.get("workspace_id"), request.session_id,
+            user_echo, user_echo, summary,
+        )
+        return {
+            "success": True,
+            "confirm_id": request.confirm_id,
+            "tool_name": tool_name,
+            "cancelled": True,
+            "summary": summary,
+        }
+
+    # ---- 已确认：从 resume 的工具记录里取执行结果 ----
+    try:
+        result = json.loads((rec or {}).get("result") or "{}")
+    except json.JSONDecodeError:
+        result = {"success": False, "error": "执行结果解析失败"}
+    ok = bool(result.get("success"))
+
+    mark_terminal("confirmed", {"exec_success": ok})
+    if ok:
+        summary = f"✅ 已执行「{action_label}」：{result.get('message') or '操作成功'}"
+    else:
+        summary = f"❌ 执行「{action_label}」失败：{result.get('error') or '未知错误'}"
+    user_echo = f"✅ 确认执行高风险操作：{action_label}"
+    _writeback_conversation(
+        db, current_user, action.get("workspace_id"), request.session_id,
+        user_echo, user_echo, summary,
+    )
+
+    return {
+        "success": ok,
+        "confirm_id": request.confirm_id,
+        "tool_name": tool_name,
+        "cancelled": False,
+        "result": result,
+        "summary": summary,
+        "pending_confirms": resumed.get("pending_confirms") or [],
+    }
+
+
 @router.post("/confirm")
 async def confirm_action(
     request: ActionConfirmRequest,
@@ -557,6 +642,13 @@ async def confirm_action(
             )
         except Exception as e:
             logger.warning(f"[AgentConfirm] 更新终态失败（不影响操作结果）: {e}")
+
+    # ---- P4: langgraph 引擎 → 交给图的 interrupt resume 执行工具 ----
+    from app.modules.agent.config_flags import get_engine
+    if get_engine() == "langgraph" and action.get("thread_id"):
+        return await _confirm_via_graph(
+            request, current_user, db, action, _mark_terminal, action_label
+        )
 
     # ---- 分支 1：用户取消 ----
     if not request.approved:
@@ -603,3 +695,23 @@ async def confirm_action(
         "result": result,
         "summary": summary,
     }
+
+
+# ==================== P6：可观测性（trace 聚合） ====================
+@router.get("/trace/stats")
+def agent_trace_stats(
+    days: int = 7,
+    current_user: User = Depends(get_current_user),
+):
+    """按当前用户 / 空间聚合 trace 指标（token 成本、耗时、工具调用量）
+
+    - days: 回溯天数（默认 7）
+    - 数据源：backend/logs/agent_trace/trace-YYYY-MM-DD.jsonl（AGENT_TRACE_DIR）
+    - 只返回当前用户维度，避免暴露他人用量
+    """
+    from app.modules.agent.graph.trace import aggregate_trace
+
+    days = max(1, min(days, 90))
+    data = aggregate_trace(days=days, user_id=current_user.id)
+    data["user_id"] = current_user.id
+    return data

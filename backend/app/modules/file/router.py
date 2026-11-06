@@ -90,7 +90,7 @@ async def upload_file(
     if len(content) > 50 * 1024 * 1024:
         from app.core.exceptions import BusinessError
         raise BusinessError("文件大小不能超过 50MB")
-    file.file.seek(0)  # 重置文件指针
+    file.file.seek(0)  # 重置文件指针 否则会读不到文件
 
     f = await file_crud.upload_file(db, workspace_id, current_user.id, file, folder_id)
 

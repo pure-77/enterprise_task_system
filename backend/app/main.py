@@ -11,6 +11,8 @@ from app.middleware.audit_log import AuditLogMiddleware
 from app.middleware.static_auth import StaticAuthMiddleware
 import logging
 
+logger = logging.getLogger("main")
+
 # 配置日志：缓存相关日志输出到控制台，方便排查
 logging.basicConfig(
     level=logging.INFO,
@@ -73,12 +75,21 @@ app.include_router(agent_router, prefix="/api/v1/agent")
 # 知识库路由 — RAG 索引运维（重建 / 统计）
 app.include_router(knowledge_router, prefix="/api/v1/knowledge")
 
+# MCP 工具服务（P1：5 个只读工具对外暴露，开关控制，默认关闭）
+if settings.AGENT_MCP_ENABLED:
+    from app.modules.agent.mcp.server import build_mcp_asgi
+    app.mount(settings.AGENT_MCP_MOUNT_PATH, build_mcp_asgi())
+
 # 挂载静态文件服务 - 用于提供头像等静态文件
 import os
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
 if not os.path.exists(static_dir):
     os.makedirs(static_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=static_dir), name="uploads")
+
+# 生产镜像：前端 dist 由 Dockerfile 构建后复制到 /app/static，由 FastAPI 同源托管
+# 本地开发不设置 FRONTEND_DIST，前端仍走 vite dev server
+frontend_dist = os.getenv("FRONTEND_DIST", "")
 
 
 @app.on_event("startup")
@@ -91,17 +102,36 @@ async def startup_event():
     from app.modules.agent.tools import register_all_tools
     register_all_tools()
 
+    # MCP 工具服务：FastMCP 的 session_manager 必须在父应用生命周期内显式启动
+    # （app.mount 不会向子应用传递 lifespan 事件，不启动则 tools/call 全部 500）
+    if settings.AGENT_MCP_ENABLED:
+        from app.modules.agent.mcp.server import mcp as _mcp_server
+        app.state.mcp_session_cm = _mcp_server.session_manager.run()
+        await app.state.mcp_session_cm.__aenter__()
+        logger.info(f"[MCP] 工具服务 session_manager 已启动，挂载路径 {settings.AGENT_MCP_MOUNT_PATH}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭事件 - 清理资源"""
+    # 关闭 MCP session_manager（若已启动）
+    cm = getattr(app.state, "mcp_session_cm", None)
+    if cm is not None:
+        await cm.__aexit__(None, None, None)
     from app.api.v1.websocket import stop_redis_subscriber
     stop_redis_subscriber()
+    # P3: 释放 LangGraph checkpointer（redis saver 的连接）
+    from app.modules.agent.graph.checkpointer import close_checkpointer
+    await close_checkpointer()
 
 
 @app.get("/")
 async def root():
     """根路径 - 面试考点：健康检查接口"""
+    index_file = os.path.join(frontend_dist, "index.html") if frontend_dist else ""
+    if index_file and os.path.isfile(index_file):
+        from fastapi.responses import FileResponse
+        return FileResponse(index_file)
     return {
         "message": "欢迎使用个人任务管理系统",
         "version": "1.0.0",
@@ -113,6 +143,27 @@ async def root():
 async def health_check():
     """健康检查 - 面试考点：用于监控和负载均衡"""
     return {"status": "healthy"}
+
+
+# 前端静态资源与 SPA 兜底（必须注册在所有 API / 健康检查路由之后）
+if frontend_dist and os.path.isdir(frontend_dist):
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    assets_dir = os.path.join(frontend_dist, "assets")
+    if os.path.isdir(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_frontend(full_path: str):
+        # 未命中的接口路径不能回退成首页，避免前端把 404 当成 HTML 解析
+        if full_path.startswith(("api/", "uploads/", "mcp", "docs", "redoc", "openapi.json", "health")):
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = os.path.join(frontend_dist, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        # Vue Router 使用 history 模式，其余路径统一返回 index.html
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
 
 
 if __name__ == "__main__":

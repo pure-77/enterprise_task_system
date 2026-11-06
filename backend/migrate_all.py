@@ -38,6 +38,7 @@ def create_all_tables():
     from app.modules.attendance.models import AttendanceRule, AttendanceRecord, AttendanceStats
     from app.modules.announcement.models import Announcement, AnnouncementRead
     from app.modules.file.models import FileFolder, File
+    from app.modules.knowledge.models import KnowledgeDocument, KnowledgeChunk
 
     # create_all 只创建不存在的表
     Base.metadata.create_all(bind=engine)
@@ -62,6 +63,8 @@ def create_all_tables():
         "attendance_rules", "attendance_records", "attendance_stats",
         "announcements", "announcement_reads",
         "file_folders", "files",
+        # 知识库 / RAG
+        "knowledge_documents", "knowledge_chunks",
     ]
     for t in expected:
         status = "[OK]" if t in existing else "[MISSING]"

@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     AGENT_MEMORY_MAX_ROUNDS: int = 20        # 对话记忆保留最近 N 轮
     AGENT_MEMORY_TTL_SECONDS: int = 86400    # 记忆 Redis TTL（秒），默认 24 小时
 
+    # ==================== Agent 引擎开关（迁移方案 P1/P2/P3） ====================
+    AGENT_ENGINE: str = "legacy"             # legacy | langgraph
+    AGENT_MCP_ENABLED: bool = False          # 是否挂载 /mcp 工具服务（P1）
+    AGENT_MCP_MOUNT_PATH: str = "/mcp"       # MCP 服务挂载路径
+    AGENT_MCP_MAX_TOOL_RESULTS: int = 4000   # MCP 单次工具结果截断长度
+    AGENT_CHECKPOINTER: str = "redis"        # langgraph 状态后端：redis | memory
+
+    # ==================== P6 可观测性 ====================
+    AGENT_TRACE_ENABLED: bool = True         # 是否落盘全链路 trace（JSONL）
+    AGENT_TRACE_DIR: str = "logs/agent_trace"  # 相对 backend/ 的 trace 目录
+
     # ==================== 知识库 / RAG 配置 ====================
     KB_ENABLED: bool = True
     CHROMA_DIR: str = "data/chroma"          # 相对 backend/ 目录（解析为绝对路径）
@@ -68,6 +79,7 @@ class Settings(BaseSettings):
     KB_CHUNK_OVERLAP: int = 80               # 切片重叠
     KB_TOP_K: int = 6                        # 检索返回片段数
     KB_SNIPPET_LEN: int = 400                # 返回给 LLM 的单片段截断长度
+    KB_MIN_SCORE: float = 0.3                # 最低分硬阈值（cosine 相似度；低分丢弃，防止 LLM 幻觉）
     KB_WRITE_LOCK_TTL: int = 60              # Chroma 写锁（Redis）超时（秒）
     AGENT_SYSTEM_PROMPT: str = """你是「企业办公智能助手」，一个帮助用户操作企业协作平台的 AI Agent。
 

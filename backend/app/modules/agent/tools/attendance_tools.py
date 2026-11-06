@@ -96,7 +96,10 @@ def _handler_check_out(workspace_id: int = None, remark: str = None, context: di
         record = attendance_crud.check_out(db, user_id=user.id, rule_id=rule_id, remark=remark)
         work_minutes = None
         if record.check_in_time and record.check_out_time:
-            work_minutes = int((record.check_out_time - record.check_in_time).total_seconds() / 60)
+            # 注意：check_in/out_time 是 time 对象（DB Time 列），不能直接相减，先换算成当日分钟数
+            def _to_minutes(t):
+                return t.hour * 60 + t.minute + round(t.second / 60)
+            work_minutes = _to_minutes(record.check_out_time) - _to_minutes(record.check_in_time)
         return json.dumps({
             "success": True,
             "record_id": record.id,
@@ -147,7 +150,7 @@ def _handler_attendance_stats(workspace_id: int = None, context: dict = None) ->
 
 
 def register_attendance_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("attendance_check_in", _schema_check_in(), _handler_check_in, group="attendance")
     ToolRegistry.register("attendance_check_out", _schema_check_out(), _handler_check_out, group="attendance")
     ToolRegistry.register("attendance_stats", _schema_get_attendance_stats(), _handler_attendance_stats, group="attendance")

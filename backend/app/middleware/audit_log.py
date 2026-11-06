@@ -5,7 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.security import decode_token
 from app.db.session import get_db_session
 
-SKIP_PREFIXES = ["/docs", "/redoc", "/openapi.json", "/health", "/uploads", "/static"]
+SKIP_PREFIXES = ["/docs", "/redoc", "/openapi.json", "/health", "/uploads", "/static", "/mcp"]
 
 
 class AuditLogMiddleware(BaseHTTPMiddleware):

@@ -8,7 +8,7 @@ from app.core.exceptions import ResourceNotFoundError, PermissionDeniedError
 from app.models.workspace import WorkspaceRole, WorkspaceMember
 from app.models.user import User
 from app.modules.org.crud import department_crud, position_crud
-from app.modules.org.models import Department
+from app.modules.org.models import Department, Position
 from app.modules.org.schemas import (
     DepartmentCreate, DepartmentUpdate,
     PositionCreate, PositionUpdate, PositionResponse,

@@ -10,7 +10,7 @@ from app.core.exceptions import ResourceNotFoundError, BusinessError
 class FileCRUD:
 
     # ===== Folder =====
-
+    
     def get_folders(self, db: Session, workspace_id: int, parent_id: int = None) -> list[FileFolder]:
         return db.query(FileFolder).filter(
             FileFolder.workspace_id == workspace_id,

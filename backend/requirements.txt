@@ -2,7 +2,7 @@
 # 核心框架
 # ============================================
 fastapi==0.135.2
-uvicorn[standard]==0.24.0.post1
+uvicorn[standard]==0.54.0
 pydantic==2.9.0
 pydantic-settings==2.1.0
 
@@ -72,6 +72,13 @@ gunicorn==21.2.0
 # Agent / LLM
 # ============================================
 openai==1.51.0          # 兼容所有 OpenAI 协议的模型 SDK（DeepSeek/千问/豆包…）
+langgraph==1.2.20
+langchain==1.4.9
+langchain-core==1.7.6
+langchain-openai==1.7.4
+langgraph-checkpoint==4.3.1
+langgraph-checkpoint-redis==0.3.9   # AGENT_CHECKPOINTER=redis 时使用；无 RediSearch 会自动回退 memory
+mcp==1.30.0                          # FastMCP Streamable HTTP 工具服务
 
 # ============================================
 # 知识库 / RAG

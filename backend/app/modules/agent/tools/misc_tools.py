@@ -192,7 +192,7 @@ def _handler_reject_approval(instance_id: int, comment: str = None, context: dic
 
 
 def register_approval_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("list_my_approvals", _schema_my_approvals(), _handler_my_approvals, group="approval")
     ToolRegistry.register("submit_approval", _schema_submit_approval(), _handler_submit_approval, group="approval")
     ToolRegistry.register("approve_approval", _schema_approve_approval(), _handler_approve_approval, group="approval")
@@ -221,7 +221,7 @@ def _handler_get_stats(workspace_id: int = None, context: dict = None) -> str:
     try:
         if workspace_id is None:
             workspace_id = context.get("workspace_id")
-        from app.crud.statistics import statistics_crud
+        from app.crud.statistics import statistics as statistics_crud
         data = statistics_crud.get_overview(db, user_id=user.id, workspace_id=workspace_id)
         return json.dumps({"success": True, "data": data}, ensure_ascii=False, default=str)
     except Exception as e:
@@ -232,7 +232,7 @@ def _handler_get_stats(workspace_id: int = None, context: dict = None) -> str:
 
 
 def register_statistics_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("get_statistics_overview", _schema_get_stats(), _handler_get_stats, group="statistics")
     logger.info("[Agent] statistics 模块 1 个工具已注册")
 
@@ -368,7 +368,7 @@ def _handler_list_positions(workspace_id: int = None, context: dict = None) -> s
 
 
 def register_org_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("list_workspace_members", _schema_list_members(), _handler_list_members, group="org")
     ToolRegistry.register("list_departments", _schema_list_departments(), _handler_list_departments, group="org")
     ToolRegistry.register("list_positions", _schema_list_positions(), _handler_list_positions, group="org")
@@ -546,7 +546,7 @@ def _handler_create_folder(name: str, workspace_id: int = None, parent_id: int =
 
 
 def register_file_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("search_files", _schema_search_files(), _handler_search_files, group="file")
     ToolRegistry.register("get_file_detail", _schema_get_file_detail(), _handler_get_file_detail, group="file")
     ToolRegistry.register("delete_file", _schema_delete_file(), _handler_delete_file, group="file")

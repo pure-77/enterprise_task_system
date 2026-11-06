@@ -229,8 +229,8 @@ async def recall_message(
             "recalled_at": msg.recalled_at.isoformat() if msg.recalled_at else None,
         }
         publish_im_message(msg.conversation_id, recall_data)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"redis不可用，请检查redis连接是否正常: {e}")
 
     # RAG：后台异步清理该消息的向量与分片元数据
     try:

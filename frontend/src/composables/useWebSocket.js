@@ -3,7 +3,9 @@ import { auth } from '@/utils/auth'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 // API_BASE 已包含 /api/v1，WebSocket 端点在 /api/v1/ws
-const WS_URL = API_BASE.replace(/^http/, 'ws') + '/ws'
+// 同源部署时 VITE_API_BASE_URL 为相对路径（/api/v1），需要补全当前站点的协议与域名
+const HTTP_BASE = /^http/.test(API_BASE) ? API_BASE : `${location.origin}${API_BASE}`
+const WS_URL = HTTP_BASE.replace(/^http/, 'ws') + '/ws'
 
 // 全局单例状态 — 所有组件共享同一个 WebSocket 连接
 const connected = ref(false)

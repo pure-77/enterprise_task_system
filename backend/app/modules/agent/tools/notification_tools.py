@@ -64,7 +64,7 @@ def _handler_mark_read(notification_id: int, context: dict = None) -> str:
     db = SessionLocal()
     try:
         from app.modules.notification.crud import notification_crud
-        notification_crud.mark_read(db, notif_id=notification_id, user_id=user.id)
+        notification_crud.mark_read(db, user_id=user.id, notif_ids=[notification_id])
         return json.dumps({"success": True, "message": f"通知已标记已读 ✅"}, ensure_ascii=False)
     except Exception as e:
         logger.exception("标记已读失败")
@@ -94,9 +94,12 @@ def _handler_list_announcements(workspace_id: int = None, limit: int = 10, conte
     try:
         from app.modules.announcement.crud import announcement_crud
         limit = min(limit, 30)
-        items = announcement_crud.get_list(db, workspace_id=workspace_id, limit=limit)
+        # workspace_id 为必填；未指定时用 Agent 上下文空间
+        ws = workspace_id if workspace_id is not None else (context or {}).get("workspace_id")
+        result = announcement_crud.get_list(db, workspace_id=ws, page=1, page_size=limit)
+        items = result.get("items", []) if isinstance(result, dict) else (result or [])
         result = []
-        for a in items or []:
+        for a in items:
             if isinstance(a, dict):
                 result.append({"id": a.get("id"), "title": a.get("title"), "content": (a.get("content") or "")[:100]})
             else:
@@ -110,13 +113,13 @@ def _handler_list_announcements(workspace_id: int = None, limit: int = 10, conte
 
 
 def register_notification_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("list_notifications", _schema_list_notifications(), _handler_list_notifications, group="notification")
     ToolRegistry.register("mark_notification_read", _schema_mark_notification_read(), _handler_mark_read, group="notification")
     logger.info("[Agent] notification 模块 2 个工具已注册")
 
 
 def register_announcement_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
     ToolRegistry.register("list_announcements", _schema_list_announcements(), _handler_list_announcements, group="announcement")
     logger.info("[Agent] announcement 模块 1 个工具已注册")

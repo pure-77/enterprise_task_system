@@ -296,7 +296,8 @@ def _handler_complete_task(
     db = SessionLocal()
 
     try:
-        from app.models.task import TaskStatus, TaskAssignee
+        from app.models.task import TaskStatus
+        from app.models.task_assignee import task_assignees
 
         # 1. 用 CRUD 加 user_id 过滤（只有可见任务才返回）
         task = task_crud.get_by_id(db, task_id=task_id, user_id=user.id)
@@ -304,7 +305,7 @@ def _handler_complete_task(
             return json.dumps({"success": False, "error": f"任务 ID {task_id} 不存在或你无权操作"}, ensure_ascii=False)
 
         # 2. 权限：Owner/Admin 全量；普通成员只能操作 assignee 或 created_by 且非 team_wide 的任务
-        if task.created_by != user.id and task.assignee_id != user.id:
+        if task.user_id != user.id and task.assignee_id != user.id:
             from app.models.workspace import WorkspaceMember
             from app.core.permissions import WorkspaceRole
             admin = db.query(WorkspaceMember).filter(
@@ -317,7 +318,7 @@ def _handler_complete_task(
                 return json.dumps({"success": False, "error": "你无权操作该任务"}, ensure_ascii=False)
 
         # 3. 多人完成追踪逻辑
-        if task.is_team_wide or db.query(TaskAssignee).filter(TaskAssignee.task_id == task.id).count() > 1:
+        if task.is_team_wide or db.query(task_assignees).filter(task_assignees.c.task_id == task.id).count() > 1:
             # team_wide 或多人 assignee：走多人完成追踪
             from app.models.task_completion import TaskCompletion
             existing = db.query(TaskCompletion).filter(
@@ -329,12 +330,12 @@ def _handler_complete_task(
             db.add(TaskCompletion(task_id=task.id, user_id=user.id))
             db.flush()
             # 检查是否所有 assignee 都已完成
-            all_assignees = db.query(TaskAssignee.user_id).filter(TaskAssignee.task_id == task.id).all()
+            all_assignees = db.query(task_assignees.c.user_id).filter(task_assignees.c.task_id == task.id).all()
             all_user_ids = {a[0] for a in all_assignees}
             if not all_user_ids:
                 # is_team_wide 但没有任何 TaskAssignee → 用 assignee_id / 创建者兜底，
                 # 否则集合为空将导致任务永远无法置为 completed（死锁）
-                fallback = task.assignee_id or task.created_by
+                fallback = task.assignee_id or task.user_id
                 if fallback:
                     all_user_ids = {fallback}
             if not all_user_ids:
@@ -394,7 +395,8 @@ def _handler_update_task_status(
     db = SessionLocal()
 
     try:
-        from app.models.task import TaskStatus, TaskAssignee
+        from app.models.task import TaskStatus
+        from app.models.task_assignee import task_assignees
 
         # 1. 用 CRUD 加 user_id 过滤（只有可见任务才返回）
         task = task_crud.get_by_id(db, task_id=task_id, user_id=user.id)
@@ -402,7 +404,7 @@ def _handler_update_task_status(
             return json.dumps({"success": False, "error": f"任务 ID {task_id} 不存在或你无权操作"}, ensure_ascii=False)
 
         # 2. 权限：Owner/Admin 全量；普通成员只能操作 assignee 或 created_by 且非 team_wide 的任务
-        if task.created_by != user.id and task.assignee_id != user.id:
+        if task.user_id != user.id and task.assignee_id != user.id:
             from app.models.workspace import WorkspaceMember
             from app.core.permissions import WorkspaceRole
             admin = db.query(WorkspaceMember).filter(
@@ -417,7 +419,7 @@ def _handler_update_task_status(
         # 3. 禁止直接 PATCH 到 completed —— 必须走 complete_task 的多人追踪逻辑
         target_status = TaskStatus(status)
         if target_status == TaskStatus.COMPLETED and task.status != TaskStatus.COMPLETED:
-            if task.is_team_wide or db.query(TaskAssignee).filter(TaskAssignee.task_id == task.id).count() > 1:
+            if task.is_team_wide or db.query(task_assignees).filter(task_assignees.c.task_id == task.id).count() > 1:
                 return json.dumps({"success": False, "error": "多人任务需逐个标记完成（用 complete_task），不能直接改状态"}, ensure_ascii=False)
 
         task.status = target_status
@@ -711,7 +713,7 @@ def _handler_plan_tasks(
 
 def register_task_tools():
     """将 task 模块的所有工具注册到 ToolRegistry"""
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
 
     ToolRegistry.register("create_task", _schema_create_task(), _handler_create_task, group="task")
     ToolRegistry.register("plan_tasks", _schema_plan_tasks(), _handler_plan_tasks, group="task")

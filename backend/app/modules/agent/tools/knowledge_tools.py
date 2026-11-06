@@ -144,14 +144,18 @@ def _handler_search_knowledge(query: str, top_k: int = None, source_types: list 
             meta = meta or {}
             st = meta.get("source_type", "")
             title = meta.get("title") or ""
+            # cosine 距离 → 相似度（越大越相关）
+            score = round(1 - (dist if dist is not None else 1.0), 4)
+            # 最低分硬阈值过滤 — 低分丢弃，防止无关片段污染 LLM 上下文（防幻觉硬规则）
+            if score < settings.KB_MIN_SCORE:
+                continue
             items.append({
                 "text": (doc_ or "")[:settings.KB_SNIPPET_LEN],
                 "title": title,
                 "source_type": st,
                 "source_id": meta.get("source_id"),
                 "conversation_id": meta.get("conversation_id"),
-                # cosine 距离 → 相似度（越大越相关）
-                "score": round(1 - (dist if dist is not None else 1.0), 4),
+                "score": score,
                 "citation": f"〔{_SOURCE_NAMES.get(st, st)}《{title}》#{meta.get('source_id')}〕",
             })
 
@@ -164,7 +168,7 @@ def _handler_search_knowledge(query: str, top_k: int = None, source_types: list 
 
 
 def register_knowledge_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
 
     ToolRegistry.register("search_knowledge", _schema_search_knowledge(),
                           _handler_search_knowledge, group="knowledge")

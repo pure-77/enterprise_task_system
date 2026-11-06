@@ -148,7 +148,7 @@ def publish_task_event(user_id: int, task_data: dict):
                 "data": task_data,
                 "timestamp": get_beijing_time_str()
             })
-        )
+        ) 
     except Exception:
         pass
 

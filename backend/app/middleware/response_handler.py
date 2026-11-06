@@ -14,7 +14,7 @@ def _clean_headers(headers: dict) -> dict:
 
 
 # 不包装的路径 — OpenAPI spec 必须保持原始格式，WebSocket 端点跳过
-SKIP_WRAP_PATHS = {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect", "/api/v1/ws"}
+SKIP_WRAP_PATHS = {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect", "/api/v1/ws", "/mcp"}
 
 
 class ResponseHandlerMiddleware(BaseHTTPMiddleware):
@@ -27,8 +27,10 @@ class ResponseHandlerMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
 
-            # 跳过 OpenAPI 相关路径
-            if request.url.path in SKIP_WRAP_PATHS or request.url.path.startswith("/docs"):
+            # 跳过 OpenAPI 相关路径；/mcp 是 MCP 协议端点，客户端期望裸 JSON-RPC，不能包装
+            if (request.url.path in SKIP_WRAP_PATHS
+                    or request.url.path.startswith("/docs")
+                    or request.url.path.startswith("/mcp")):
                 return response
 
             # 错误响应（4xx/5xx）保持原生结构，不做成功包装

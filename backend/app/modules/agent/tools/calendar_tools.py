@@ -279,7 +279,7 @@ def _handler_delete_event(
 
 def register_calendar_tools():
     """将 calendar 模块的所有工具注册到 ToolRegistry"""
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
 
     ToolRegistry.register("list_calendar_events", _schema_list_events(), _handler_list_events, group="calendar")
     ToolRegistry.register("create_calendar_event", _schema_create_event(), _handler_create_event, group="calendar")

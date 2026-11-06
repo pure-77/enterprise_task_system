@@ -203,7 +203,7 @@ class AgentMemory:
         # 尝试让 LLM 生成摘要
         summary = None
         try:
-            from app.modules.agent.llm_provider import get_llm
+            from app.modules.agent.legacy.llm_provider import get_llm
             llm = get_llm(has_image=False)
 
             # 构造纯文本对话用于摘要

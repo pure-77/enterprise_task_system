@@ -60,6 +60,7 @@ async def delete_rule(
     return {"message": "规则已删除"}
 
 
+
 @router.post("/check-in")
 async def check_in(
     body: CheckInOut,

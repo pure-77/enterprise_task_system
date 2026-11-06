@@ -465,7 +465,7 @@ def _handler_generate_chart(
 # ============================================================
 
 def register_summary_tools():
-    from app.modules.agent.tool_registry import ToolRegistry
+    from app.modules.agent.legacy.tool_registry import ToolRegistry
 
     ToolRegistry.register("summarize_today_work", _schema_summarize_today_work(), _handler_summarize_today_work, group="summary")
     ToolRegistry.register("summarize_week_progress", _schema_summarize_week_progress(), _handler_summarize_week_progress, group="summary")
