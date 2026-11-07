@@ -157,13 +157,13 @@ async def download_file(
     is_inline = mode == "inline"
     media_type = f.mime_type or "application/octet-stream"
 
+    # 中文文件名不能直接写进响应头（HTTP 头按 latin-1 编码，会抛 UnicodeEncodeError → 500）
+    # 交给 Starlette 生成 RFC 5987 的 filename*=utf-8''... 编码
     return FileResponse(
         path=full_path,
         filename=f.name,
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'{"inline" if is_inline else "attachment"}; filename="{f.name}"'
-        }
+        content_disposition_type="inline" if is_inline else "attachment",
     )
 
 
@@ -201,9 +201,7 @@ async def preview_pdf(
             path=pdf_path,
             filename=pdf_name,
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'inline; filename="{pdf_name}"'
-            }
+            content_disposition_type="inline",
         )
     except Exception as e:
         logger.error(f"Office文档转换失败: {e}")
@@ -318,8 +316,6 @@ async def preview_file_signed(
         path=full_path,
         filename=f.name,
         media_type=media_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{f.name}"',
-            "Access-Control-Allow-Origin": "*",
-        }
+        content_disposition_type="inline",
+        headers={"Access-Control-Allow-Origin": "*"},
     )

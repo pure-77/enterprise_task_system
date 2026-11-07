@@ -165,6 +165,9 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        # .env 里除了 Settings 自己的字段，还有 COS_* 等由其他配置类消费的变量
+        # pydantic-settings 默认 extra="forbid"，读到这些未知变量会直接抛 ValidationError
+        extra = "ignore"
 
 
 @lru_cache()

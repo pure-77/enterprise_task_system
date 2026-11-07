@@ -7,7 +7,12 @@
       </el-table-column>
       <el-table-column prop="type" label="类型" width="80" />
       <el-table-column prop="creator_name" label="发布者" width="100" />
-      <el-table-column prop="created_at" label="时间" width="160" />
+      <el-table-column label="时间" width="160">
+      <template #default="{ row }">
+        {{ formatTime(row.created_at) }}
+      </template>
+</el-table-column>
+
     </el-table>
 
     <el-dialog v-model="showCreate" title="发布公告" width="560px">
@@ -33,6 +38,7 @@ import { ref, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { announcementApi } from '@/api/announcement'
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
+import { formatTime } from '@/utils/format'
 const wsStore = useWorkspaceStore()
 const isAdmin = ref(true) // TODO
 const list = ref([]); const loading = ref(false)
