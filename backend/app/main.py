@@ -147,23 +147,32 @@ async def health_check():
 
 # 前端静态资源与 SPA 兜底（必须注册在所有 API / 健康检查路由之后）
 if frontend_dist and os.path.isdir(frontend_dist):
-    from fastapi import HTTPException
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, JSONResponse
+    from starlette.exceptions import HTTPException as StarletteHTTPException
 
     assets_dir = os.path.join(frontend_dist, "assets")
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_frontend(full_path: str):
-        # 未命中的接口路径不能回退成首页，避免前端把 404 当成 HTML 解析
-        if full_path.startswith(("api/", "uploads/", "mcp", "docs", "redoc", "openapi.json", "health")):
-            raise HTTPException(status_code=404, detail="Not Found")
-        candidate = os.path.join(frontend_dist, full_path)
-        if full_path and os.path.isfile(candidate):
-            return FileResponse(candidate)
-        # Vue Router 使用 history 模式，其余路径统一返回 index.html
-        return FileResponse(os.path.join(frontend_dist, "index.html"))
+    # 注意：不要注册 @app.get("/{full_path:path}") 兜底路由。
+    # 它会抢先命中「无尾斜杠的 API 请求」（如 GET /api/v1/categories，而路由是 /api/v1/categories/），
+    # 导致本该由 Starlette 自动 307 重定向的请求变成 404/405。
+    # 改用 404 异常处理器：路由层未命中才回退首页，API 路径仍返回 JSON 404。
+    @app.exception_handler(StarletteHTTPException)
+    async def spa_fallback(request, exc):
+        path = request.url.path
+        api_prefixes = ("/api/", "/uploads/", "/mcp", "/docs", "/redoc", "/openapi.json", "/health")
+        if exc.status_code == 404 and request.method in ("GET", "HEAD") and not path.startswith(api_prefixes):
+            candidate = os.path.join(frontend_dist, path.lstrip("/"))
+            if path != "/" and os.path.isfile(candidate):
+                return FileResponse(candidate)
+            # Vue Router 使用 history 模式，其余非 API 路径统一返回 index.html
+            return FileResponse(os.path.join(frontend_dist, "index.html"))
+        return JSONResponse(
+            {"detail": exc.detail},
+            status_code=exc.status_code,
+            headers=getattr(exc, "headers", None),
+        )
 
 
 if __name__ == "__main__":
