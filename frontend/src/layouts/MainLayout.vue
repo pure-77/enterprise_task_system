@@ -284,11 +284,13 @@ function detectGroupFromRoute(path) {
   return 'work'
 }
 
-// 个人空间模式下完全禁用的模块组
-const PERSONAL_MODE_DISABLED_GROUPS = ['comm', 'collab', 'manage']
+// 个人空间模式下完全禁用的模块组（组内所有菜单项都依赖工作空间）
+// 注意：manage 组包含"工作空间"列表页（不依赖工作空间），因此不禁用整组，
+// 而是通过菜单项的 requiresWorkspace 逐个拦截。
+const PERSONAL_MODE_DISABLED_GROUPS = ['comm', 'collab']
 
 function switchGroup(key) {
-  // 个人空间模式下，沟通/协作/管理模块整体禁用
+  // 个人空间模式下，沟通/协作模块整体禁用（组内所有功能都依赖工作空间）
   if (PERSONAL_MODE_DISABLED_GROUPS.includes(key) && workspaceStore.isPersonalMode) {
     ElMessage.warning('个人空间模式下暂不支持该功能，请先加入或创建工作空间')
     return
@@ -304,8 +306,12 @@ function switchGroup(key) {
   // 切换分组时默认跳转到该组第一个菜单（如果当前不在该组内）
   const items = menuItems.value[key]
   if (items && items.length && !items.some(it => route.path === it.path)) {
-    const firstItem = items[0]
-    router.push(firstItem.path)
+    // 个人空间模式下，优先跳转到第一个不依赖工作空间的菜单项，
+    // 避免新用户（无工作空间）被自动带入需要工作空间的页面。
+    const target = workspaceStore.isPersonalMode
+      ? items.find(it => !it.requiresWorkspace) || items[0]
+      : items[0]
+    router.push(target.path)
   }
 }
 

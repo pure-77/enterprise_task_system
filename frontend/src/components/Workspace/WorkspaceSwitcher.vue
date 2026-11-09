@@ -28,13 +28,23 @@
         </el-option>
       </el-option-group>
     </el-select>
+    <el-button
+      type="primary"
+      plain
+      size="small"
+      class="ws-create-btn"
+      @click="router.push('/workspaces/create')"
+    >
+      <el-icon><Plus /></el-icon>
+      <span>创建工作空间</span>
+    </el-button>
   </div>
 </template>
 
 <script setup>
 import { useWorkspaceStore } from '@/pinia/workspaceStore'
 import { useRouter } from 'vue-router'
-import { User, OfficeBuilding } from '@element-plus/icons-vue'
+import { User, OfficeBuilding, Plus } from '@element-plus/icons-vue'
 
 const workspaceStore = useWorkspaceStore()
 const router = useRouter()
@@ -53,7 +63,10 @@ const handleSwitch = (workspaceId) => {
 
 <style scoped>
 .workspace-switcher {
-  padding: 16px 12px 0;
+  padding: 16px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .ws-select {
   width: 100%;
@@ -65,5 +78,9 @@ const handleSwitch = (workspaceId) => {
 }
 .role-tag {
   margin-left: auto;
+}
+.ws-create-btn {
+  width: 100%;
+  justify-content: center;
 }
 </style>
