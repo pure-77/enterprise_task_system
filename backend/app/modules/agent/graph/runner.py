@@ -29,7 +29,7 @@ from app.modules.agent.graph.builder import build_graph
 from app.modules.agent.graph.checkpointer import get_checkpointer
 from app.modules.agent.graph.llm import ChatLLMWithFallback
 from app.modules.agent.graph.trace import TraceRecorder
-from app.modules.agent.memory import AgentMemory
+from app.modules.agent.memory import AgentMemory, build_ops_digest, format_ops_context
 from app.modules.agent.schemas import AgentChatResponse, AgentToolCall
 from app.modules.agent.session_service import AgentSessionService
 
@@ -172,6 +172,12 @@ class LangGraphAgentService:
                     del h["tool_calls"]
             cleaned_history.append(h)
 
+        # 上轮工具调用记录（Redis 短期记忆里的 ops 字段）并入 system prompt，
+        # 让模型跨轮能看到"上一轮实际查了什么、拿到什么"，避免因上下文空缺而自我怀疑。
+        # 放在 base_system_prompt 里，route_intent 替换 system 消息时才不会丢。
+        ops_context = format_ops_context(cleaned_history)
+        if ops_context:
+            base_system_prompt = f"{base_system_prompt}\n\n{ops_context}"
         messages = [SystemMessage(content=base_system_prompt, id="sys_prompt")]
         for h in cleaned_history:
             lc = _history_to_lc(h)
@@ -319,7 +325,13 @@ class LangGraphAgentService:
         )
 
         # ---------- Step 6: 保存记忆（同 legacy） ----------
-        await anyio.to_thread.run_sync(lambda: self.memory.save(user_message, final_reply, image_url))
+        # 同时把本轮工具调用压成 ops 摘要存入短期记忆，供下一轮注入上下文
+        ops_digest = build_ops_digest(tool_records)
+        await anyio.to_thread.run_sync(
+            lambda: self.memory.save(
+                user_message, final_reply, image_url, ops=ops_digest or None
+            )
+        )
 
         # ---------- Step 7: 持久化到 MySQL（同 legacy） ----------
         def _persist_to_mysql() -> Optional[int]:

@@ -436,7 +436,10 @@ async def confirm_plan(
         )
         AgentSessionService.append_message(db, db_session, role="user", content=user_echo)
         AgentSessionService.append_message(db, db_session, role="assistant", content=summary)
-        AgentMemory(ws0, current_user.id, session_key).save(user_echo, summary)
+        AgentMemory(ws0, current_user.id, session_key).save(
+            user_echo, summary,
+            ops=f"- plan_tasks 计划确认 → 创建成功 {len(created)} 个，失败 {len(failed)} 个",
+        )
     except Exception as e:
         logger.warning(f"[AgentPlan] 会话回写失败（不影响创建结果）: {e}")
 
@@ -508,6 +511,7 @@ def _writeback_conversation(
     title: str,
     user_echo: str,
     assistant_msg: str,
+    ops: str = None,
 ):
     """把确认/取消结果回写到同一会话（MySQL 历史 + Redis 短期记忆），失败不影响主流程"""
     ws0 = workspace_id or 0
@@ -519,7 +523,9 @@ def _writeback_conversation(
         )
         AgentSessionService.append_message(db, db_session, role="user", content=user_echo)
         AgentSessionService.append_message(db, db_session, role="assistant", content=assistant_msg)
-        AgentMemory(ws0, current_user.id, session_key).save(user_echo, assistant_msg)
+        AgentMemory(ws0, current_user.id, session_key).save(
+            user_echo, assistant_msg, ops=ops or None
+        )
     except Exception as e:
         logger.warning(f"[AgentConfirm] 会话回写失败（不影响操作结果）: {e}")
 
@@ -571,6 +577,7 @@ async def _confirm_via_graph(
         _writeback_conversation(
             db, current_user, action.get("workspace_id"), request.session_id,
             user_echo, user_echo, summary,
+            ops=f"- {tool_name} → 用户取消，未执行",
         )
         return {
             "success": True,
@@ -596,6 +603,8 @@ async def _confirm_via_graph(
     _writeback_conversation(
         db, current_user, action.get("workspace_id"), request.session_id,
         user_echo, user_echo, summary,
+        ops=f"- {tool_name} → {'成功' if ok else '失败'}，"
+            f"{result.get('message') or result.get('error') or ''}",
     )
 
     return {
@@ -658,6 +667,7 @@ async def confirm_action(
         _writeback_conversation(
             db, current_user, action.get("workspace_id"), request.session_id,
             user_echo, user_echo, summary,
+            ops=f"- {tool_name} → 用户取消，未执行",
         )
         return {
             "success": True,
@@ -685,6 +695,8 @@ async def confirm_action(
     _writeback_conversation(
         db, current_user, action.get("workspace_id"), request.session_id,
         user_echo, user_echo, summary,
+        ops=f"- {tool_name} → {'成功' if ok else '失败'}，"
+            f"{result.get('message') or result.get('error') or ''}",
     )
 
     return {

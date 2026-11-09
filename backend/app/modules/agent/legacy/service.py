@@ -34,7 +34,7 @@ from app.models.user import User
 from app.models.agent_audit import AgentAuditLog
 from app.modules.agent.legacy.llm_provider import get_llm, DeepSeekProvider
 from app.modules.agent.legacy.tool_registry import ToolRegistry
-from app.modules.agent.memory import AgentMemory
+from app.modules.agent.memory import AgentMemory, build_ops_digest, format_ops_context
 from app.modules.agent.schemas import AgentToolCall, AgentChatResponse
 from app.modules.agent.session_service import AgentSessionService
 
@@ -283,6 +283,11 @@ class AgentService:
 - 日期推断: 用户说"明天"=今天+1天, "后天"=+2天, "下周"=本周一+7天, 直接使用上面的"现在时间"推算即可, 不要询问用户。
 - 时间推断: 用户说"6点"/"下午6点"=18:00, "早上6点"=06:00, "中午12点"=12:00。
 - 所有工具调用都在这个空间范围内执行，无需询问用户要在哪个空间操作。"""
+        # 上轮工具调用记录（Redis 短期记忆的 ops 字段）并入 system prompt，
+        # 避免多条 system 消息（部分 OpenAI 兼容接口只认首条）
+        ops_context = format_ops_context(history)
+        if ops_context:
+            system_prompt = f"{system_prompt}\n\n{ops_context}"
         messages.append({"role": "system", "content": system_prompt})
 
         # 历史对话（过滤脏消息：必须有合法 role，且无损坏的 tool_calls 结构）
@@ -293,6 +298,8 @@ class AgentService:
                 continue
             if h.get("role") not in VALID_ROLES:
                 continue
+            # ops 是本地记忆字段，不能透传给 OpenAI（非法顶层 key 会 400）
+            h.pop("ops", None)
             # assistant 消息如果带了 tool_calls，检查每个元素必须有 id + type + function
             if h["role"] == "assistant" and h.get("tool_calls"):
                 valid_tcs = []
@@ -565,7 +572,13 @@ class AgentService:
 
         # ---------- Step 6: 保存记忆 ----------
         # 同步 Redis/DB 操作放到线程池执行，避免阻塞事件循环
-        await anyio.to_thread.run_sync(lambda: self.memory.save(user_message, final_reply, image_url))
+        # 本轮工具调用压成 ops 摘要一并存入，供下一轮注入上下文
+        ops_digest = build_ops_digest([tc.model_dump() for tc in tool_calls_record])
+        await anyio.to_thread.run_sync(
+            lambda: self.memory.save(
+                user_message, final_reply, image_url, ops=ops_digest or None
+            )
+        )
 
         # ---------- Step 7: 持久化到 MySQL（会话列表 + 完整消息历史）----------
         resolved_session_key = self.session_id or f"user:{self.user.id}"

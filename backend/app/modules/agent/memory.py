@@ -17,6 +17,85 @@ from app.core.config import settings
 
 logger = logging.getLogger("agent.memory")
 
+# 上轮操作记录在上下文中的注入上限（防止长对话把 token 撑爆）
+_OPS_MAX_TURNS = 5
+_OPS_MAX_CHARS = 800
+
+
+def build_ops_digest(tool_records: list[dict], max_items: int = 10) -> str:
+    """把本轮工具调用压成紧凑摘要（一轮一条），用于下一轮上下文。
+
+    格式：- 工具名(参数) → 成功/失败，结果要点
+    只保留 ID / 名称这类可续接的信息，不保留原始 JSON。
+    """
+    if not tool_records:
+        return ""
+
+    lines = []
+    for rec in tool_records[:max_items]:
+        name = rec.get("tool_name") or "unknown"
+        args = rec.get("arguments") or {}
+        try:
+            args_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args_text = str(args)
+        args_text = " ".join(str(args_text).split())[:80]
+
+        result = rec.get("result")
+        summary = ""
+        try:
+            parsed = json.loads(result) if isinstance(result, str) else (result or {})
+            if isinstance(parsed, dict):
+                if parsed.get("error"):
+                    summary = str(parsed["error"])
+                elif parsed.get("message"):
+                    summary = str(parsed["message"])
+                elif parsed.get("count") is not None:
+                    summary = f"返回 {parsed['count']} 条"
+                elif parsed.get("total") is not None:
+                    summary = f"共 {parsed['total']} 条"
+                else:
+                    summary = "成功"
+            else:
+                summary = str(parsed)
+        except (json.JSONDecodeError, TypeError):
+            summary = str(result or "")
+        summary = " ".join(summary.split())[:100]
+
+        ok = "成功" if rec.get("success", True) else "失败"
+        lines.append(f"- {name}({args_text}) → {ok}，{summary}"[:220])
+
+    return "\n".join(lines)
+
+
+def format_ops_context(history: list[dict]) -> str:
+    """从历史消息中提取最近几轮的操作记录，拼成可注入 system 的文本。
+
+    非空时由上层作为独立 system 消息插入，避免改写 assistant 正文。
+    """
+    entries = []
+    last_user = ""
+    for h in history:
+        if not isinstance(h, dict):
+            continue
+        if h.get("role") == "user":
+            last_user = str(h.get("content") or "")
+        elif h.get("role") == "assistant" and h.get("ops"):
+            ops = str(h["ops"]).strip()
+            if ops:
+                entries.append((last_user, ops))
+    if not entries:
+        return ""
+
+    lines = [
+        "【历史操作记录】以下是你前几轮真实执行过的工具调用及结果，可作为事实依据；"
+        "不要向用户复述这份记录，也不要再怀疑数据来源。"
+    ]
+    for user_text, ops in entries[-_OPS_MAX_TURNS:]:
+        u = " ".join(user_text.split())[:60]
+        lines.append(f"用户：{u}\n操作：\n{ops}")
+    return "\n".join(lines)[:_OPS_MAX_CHARS]
+
 
 class AgentMemory:
     """Redis 对话记忆"""
@@ -130,7 +209,18 @@ class AgentMemory:
                 for m in db_messages:
                     if m.role not in ("user", "assistant"):
                         continue
-                    messages.append({"role": m.role, "content": m.content or ""})
+                    item = {"role": m.role, "content": m.content or ""}
+                    # MySQL 里 assistant 记录存了完整 tool_calls，可还原成 ops 摘要，
+                    # 这样 Redis 不可用/过期时，模型仍能看到上轮操作
+                    if m.role == "assistant" and m.tool_calls:
+                        try:
+                            records = json.loads(m.tool_calls)
+                            digest = build_ops_digest(records if isinstance(records, list) else [])
+                            if digest:
+                                item["ops"] = digest
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    messages.append(item)
 
                 logger.info(f"[Memory] MySQL fallback 拉取 {len(messages)} 条, session_id={session.id}")
 
@@ -154,7 +244,11 @@ class AgentMemory:
                 role = m.get("role", "")
                 content = m.get("content", "")
                 if role in ("user", "assistant") and content:
-                    cleaned.append(json.dumps({"role": role, "content": content}, ensure_ascii=False))
+                    item = {"role": role, "content": content}
+                    # 保留 ops 摘要，否则回灌一次就把操作记录丢了
+                    if role == "assistant" and m.get("ops"):
+                        item["ops"] = m["ops"]
+                    cleaned.append(json.dumps(item, ensure_ascii=False))
 
             if cleaned:
                 r.delete(self._key)
@@ -243,7 +337,13 @@ class AgentMemory:
             }] + recent_msgs
         return recent_msgs
 
-    def save(self, user_message: str, assistant_reply: str, image_url: Optional[str] = None):
+    def save(
+        self,
+        user_message: str,
+        assistant_reply: str,
+        image_url: Optional[str] = None,
+        ops: Optional[str] = None,
+    ):
         """
         保存一轮对话（user + assistant）
 
@@ -251,6 +351,8 @@ class AgentMemory:
             user_message: 用户消息文本
             assistant_reply: Agent 回复文本
             image_url: 用户输入中的图片 URL（可选）
+            ops: 本轮工具调用摘要（build_ops_digest 产物，可选）
+                 只存进 Redis 短期记忆，供下一轮注入上下文；不会下发给前端。
         """
         try:
             r = get_redis()
@@ -261,6 +363,8 @@ class AgentMemory:
                 user_msg["image_url"] = image_url
 
             assistant_msg = {"role": "assistant", "content": assistant_reply}
+            if ops:
+                assistant_msg["ops"] = ops
 
             # 右推入队
             r.rpush(self._key, json.dumps(user_msg, ensure_ascii=False))
