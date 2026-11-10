@@ -30,6 +30,8 @@ from app.modules.agent.graph.checkpointer import get_checkpointer
 from app.modules.agent.graph.llm import ChatLLMWithFallback
 from app.modules.agent.graph.trace import TraceRecorder
 from app.modules.agent.memory import AgentMemory, build_ops_digest, format_ops_context
+from app.modules.agent.long_memory import extract_and_store, retrieve_context
+from app.modules.agent.store import get_store
 from app.modules.agent.schemas import AgentChatResponse, AgentToolCall
 from app.modules.agent.session_service import AgentSessionService
 
@@ -178,6 +180,12 @@ class LangGraphAgentService:
         ops_context = format_ops_context(cleaned_history)
         if ops_context:
             base_system_prompt = f"{base_system_prompt}\n\n{ops_context}"
+
+        # 跨会话长期记忆：按当前问题语义检索该用户的稳定信息（偏好/身份/明确要求记住的事）
+        memory_context = await retrieve_context(self.user.id, user_message)
+        if memory_context:
+            base_system_prompt = f"{base_system_prompt}\n\n{memory_context}"
+
         messages = [SystemMessage(content=base_system_prompt, id="sys_prompt")]
         for h in cleaned_history:
             lc = _history_to_lc(h)
@@ -214,7 +222,7 @@ class LangGraphAgentService:
         }
         # P3: 接入 checkpointer，thread_id 每轮独立（见上）
         checkpointer = await get_checkpointer()
-        graph = build_graph(checkpointer=checkpointer)
+        graph = build_graph(checkpointer=checkpointer, store=get_store())
         config = {
             "configurable": {"thread_id": thread_id, "exec_ctx": exec_ctx},
             # P4: tools 每个 super-step 只跑一个工具，递归上限需按工具数放大
@@ -411,6 +419,17 @@ class LangGraphAgentService:
             thinking="\n".join(thinking_fragments),
         )
 
+        # 跨会话长期记忆抽取：放在 reply 已下发之后，不增加用户感知延迟。
+        # 只记录稳定事实（偏好/身份/明确要求记住的事），一次性任务与查询结果不入库。
+        # 中断（等待确认）的轮次本轮没有实质结论，跳过抽取。
+        if not interrupted:
+            try:
+                await extract_and_store(
+                    self.user.id, self.workspace_id or 0, user_message, final_reply
+                )
+            except Exception as e:
+                logger.warning(f"[LongMemory] 本轮抽取异常（忽略）: {e}")
+
         # P4: 未中断的轮次用完即清理 thread（中断的保留，等待 /confirm resume）
         if not interrupted:
             await _delete_thread(checkpointer, thread_id)
@@ -461,7 +480,7 @@ class LangGraphAgentService:
             "trace": trace,
         }
         checkpointer = await get_checkpointer()
-        graph = build_graph(checkpointer=checkpointer)
+        graph = build_graph(checkpointer=checkpointer, store=get_store())
         config = {
             "configurable": {"thread_id": thread_id, "exec_ctx": exec_ctx},
             "recursion_limit": settings.AGENT_MAX_TOOL_ITERATIONS * 8 + 10,

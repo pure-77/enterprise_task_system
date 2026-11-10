@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     AGENT_MEMORY_MAX_ROUNDS: int = 20        # 对话记忆保留最近 N 轮
     AGENT_MEMORY_TTL_SECONDS: int = 86400    # 记忆 Redis TTL（秒），默认 24 小时
 
+    # 跨会话长期记忆（LangGraph Store，落 MySQL）
+    AGENT_LONG_MEMORY_ENABLED: bool = True   # 是否启用长期记忆检索与抽取
+    AGENT_LONG_MEMORY_TOP_K: int = 5         # 每轮注入上下文的相关记忆条数
+    AGENT_LONG_MEMORY_MAX_ITEMS: int = 200   # 单用户记忆条数上限，超出删最旧
+
     # ==================== Agent 引擎开关（迁移方案 P1/P2/P3） ====================
     AGENT_ENGINE: str = "legacy"             # legacy | langgraph
     AGENT_MCP_ENABLED: bool = False          # 是否挂载 /mcp 工具服务（P1）

@@ -15,7 +15,7 @@ from app.modules.agent.graph import nodes
 from app.modules.agent.graph.state import AgentState
 
 
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, store=None):
     g = StateGraph(AgentState)
     g.add_node("route_intent", nodes.route_intent)
     g.add_node("agent", nodes.agent_node)
@@ -27,4 +27,5 @@ def build_graph(checkpointer=None):
     # 单工具 super-step：一批 tool_calls 逐个执行，全部完成后回 agent
     g.add_conditional_edges("tools", nodes.next_tool_step, {"tools": "tools", "agent": "agent"})
 
-    return g.compile(checkpointer=checkpointer)
+    # store：LangGraph 长期记忆（跨会话），节点可通过 config["store"] 访问
+    return g.compile(checkpointer=checkpointer, store=store)

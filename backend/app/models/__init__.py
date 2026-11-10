@@ -9,5 +9,6 @@ from app.models.workspace import Workspace, WorkspaceMember, WorkspaceInvitation
 from app.models.system_config import SystemConfig
 from app.models.agent_audit import AgentAuditLog
 from app.models.agent_session import AgentSession, AgentMessage
+from app.models.agent_memory import AgentMemoryItem
 
-__all__ = ["User", "Category", "Task", "Tag", "TaskCompletion", "Workspace", "WorkspaceMember", "WorkspaceInvitation", "WorkspaceActivity", "SystemConfig", "AgentAuditLog", "AgentSession", "AgentMessage"]
+__all__ = ["User", "Category", "Task", "Tag", "TaskCompletion", "Workspace", "WorkspaceMember", "WorkspaceInvitation", "WorkspaceActivity", "SystemConfig", "AgentAuditLog", "AgentSession", "AgentMessage", "AgentMemoryItem"]
