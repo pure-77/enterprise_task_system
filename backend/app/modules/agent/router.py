@@ -138,13 +138,18 @@ async def agent_chat_stream(
                 data = event_data["data"]
 
                 if ev == "tool_call_start":
-                    # 新事件：工具开始执行（前端可选择处理或忽略）
-                    continue  # 暂时不单独推，等 done 时聚合推 tool_call 列表
+                    # 工具开始执行：立即推，前端可渲染执行中的进度条（目前前端暂未消费，留口子）
+                    yield f"event: tool_call_start\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
                 elif ev == "tool_call_done":
-                    # 收集完整 tool_call，等 done 前一次性推 event: tool_call
+                    # 工具执行完：先收集，再立即推完整数组（前端累积更新 tool_calls 字段）
                     tc_dict = data["tool_call"]
                     tc_dict["meta"] = ToolRegistry.get_tool_meta(data["tool_name"])
                     collected_tool_calls.append(tc_dict)
+                    yield f"event: tool_call\ndata: {json.dumps(collected_tool_calls, ensure_ascii=False)}\n\n"
+                elif ev == "heartbeat":
+                    # 纯 SSE 注释行：EventSource 完全忽略，但保持连接有字节流动
+                    # （不用 event:/data: 头，避免被当成默认 message 事件触发前端回调）
+                    yield f": keepalive {data.get('ts', '')}\n\n"
                 elif ev == "message":
                     # 逐字符自然语言回复，直接推
                     yield f"event: message\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -152,10 +157,8 @@ async def agent_chat_stream(
                     # 危险操作待确认：实时透传给前端渲染确认卡片
                     yield f"event: confirm_request\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
                 elif ev == "done":
-                    # done 前先推聚合的 tool_call 列表（兼容原前端协议）
-                    if collected_tool_calls:
-                        yield f"event: tool_call\ndata: {json.dumps(collected_tool_calls, ensure_ascii=False)}\n\n"
                     # 推 done 事件（带完整元数据）
+                    # tool_call 列表已在每次 tool_call_done 时实时推送，这里不再重复
                     done_payload = {
                         "session_id": data.get("session_id", ""),
                         "model_used": data.get("model_used", ""),

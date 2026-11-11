@@ -8,9 +8,13 @@
 3. confirm_request  —— 危险操作挂起，等待用户确认（P4 迁移到 interrupt 后仍复用本格式）
 4. message          —— 回复文本分片（打字机效果）
 5. done             —— 结束，data._full 携带完整结果（reply/tool_calls/thinking/session_id/model_used）
+6. heartbeat        —— graph 执行期间每 400ms 一条，防止前端只看到"正在思考..."
 
 前端 SSE 消费方无需感知底层是 legacy 主循环还是 LangGraph。
 """
+import time
+
+from fastapi.sse import ServerSentEvent
 
 CHUNK_SIZE = 2  # 与 legacy 一致的文本分片大小
 
@@ -42,9 +46,21 @@ def confirm_request(confirm_id: str, tool_name: str, tool_args: dict, meta: dict
     }}
 
 
+def message(text: str) -> dict:
+    """LangGraph nodes 内部直接发单条 message 事件（router 侧已处理分片）"""
+    return {"event": "message", "data": text}
+
+
 def message_chunks(text: str):
+    """legacy 路径兼容：按 CHUNK_SIZE 分片逐段 yield"""
     for i in range(0, len(text), CHUNK_SIZE):
         yield {"event": "message", "data": text[i:i + CHUNK_SIZE]}
+
+
+def heartbeat() -> dict:
+    """心跳事件：graph 执行期间（route_intent / LLM 调用 / 工具执行）每 400ms 推一条，
+    避免 SSE 连接静默期间前端只看到"正在思考..."。"""
+    return {"event": "heartbeat", "data": {"ts": int(time.time())}}
 
 
 def done(session_id: str, model_used: str, reply: str, tool_calls: list[dict], thinking: str) -> dict:

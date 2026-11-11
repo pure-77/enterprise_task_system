@@ -159,26 +159,53 @@ async def route_intent(state: dict, config: RunnableConfig):
 
 # ---------- LLM 节点（对齐 legacy 主循环 LLM 调用 + 降级） ----------
 async def agent_node(state: dict, config: RunnableConfig):
+    import time as _t
     ctx = _exec_ctx(config)
+    writer = get_stream_writer()
     trace = ctx.get("trace")
     tools = state.get("tools") or []
     iteration = state.get("iteration", 0) + 1
     logger.info(f"[Graph] agent 调用 LLM, iteration={iteration}, tools={len(tools)}")
 
-    if trace is None:
-        resp = await ctx["llm"].ainvoke(state["messages"], tool_schemas=tools or None)
-    else:
-        with trace.span("agent.llm", "llm", iteration=iteration) as sp:
-            resp = await ctx["llm"].ainvoke(state["messages"], tool_schemas=tools or None)
-            trace.record_llm_usage(
-                sp,
-                getattr(resp, "usage_metadata", None),
-                ctx["llm"].last_model,
-                {
-                    "tools_available": len(tools),
-                    "tool_calls_requested": len(getattr(resp, "tool_calls", []) or []),
-                },
-            )
+    # 流式调用：边收 token 边推 SSE（token 级打字机），最终累积完整 AIMessage 给 LangGraph State
+    llm = ctx["llm"]
+
+    # 手动建 span（不再用 with trace.span 因为流式循环里不方便计时）
+    llm_span: dict | None = None
+    llm_t0: float | None = None
+    if trace is not None:
+        llm_t0 = _t.time()
+        llm_span = {
+            "name": "agent.llm",
+            "kind": "llm",
+            "offset_ms": int((_t.time() - getattr(trace, "_start_time", _t.time())) * 1000),
+            "duration_ms": 0,
+            "attrs": {"iteration": iteration, "tools_available": len(tools)},
+        }
+
+    try:
+        gen = llm.astream_collect(state["messages"], tool_schemas=tools or None)
+        async for text_piece in gen:
+            if text_piece:
+                writer(streaming.message(text_piece))
+        resp = llm._last_aimessage
+        if resp is None:
+            raise RuntimeError("LLM 未返回任何内容")
+    finally:
+        if llm_span is not None and llm_t0 is not None:
+            llm_span["duration_ms"] = int((_t.time() - llm_t0) * 1000)
+            trace.spans.append(llm_span)
+
+    if llm_span is not None:
+        trace.record_llm_usage(
+            llm_span,  # 正确的 span dict，带 attrs 键
+            getattr(resp, "usage_metadata", None),
+            ctx["llm"].last_model,
+            {
+                "tools_available": len(tools),
+                "tool_calls_requested": len(getattr(resp, "tool_calls", []) or []),
+            },
+        )
 
     return {
         "messages": [resp],

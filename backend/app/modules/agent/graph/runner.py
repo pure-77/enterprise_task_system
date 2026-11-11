@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import uuid
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -235,12 +236,37 @@ class LangGraphAgentService:
         interrupted = False
         pending_confirms: list[dict] = []
         pending_records: list[dict] = []
+
+        # ---------- 立即让 SSE 有第一个字节 + 后台心跳 ----------
+        # graph.astream 内部 route_intent + agent_node.ainvoke 同步阻塞期间，
+        # 前端必须持续收到事件才不会只显示"正在思考..."。
+        yield streaming.heartbeat()
+        hb_queue: asyncio.Queue[dict] = asyncio.Queue()
+        hb_stop = asyncio.Event()
+
+        async def _heartbeat_loop():
+            while not hb_stop.is_set():
+                try:
+                    hb_queue.put_nowait(streaming.heartbeat())
+                except asyncio.QueueFull:
+                    pass
+                await asyncio.sleep(0.4)
+
+        hb_task = asyncio.create_task(_heartbeat_loop())
+
         try:
             async for mode, chunk in graph.astream(
                 {"messages": graph_input_messages, "iteration": 0, "tool_records": []},
                 config=config,
                 stream_mode=["values", "custom", "updates"],
             ):
+                # ---------- Drain heartbeat queue（graph 事件之间确保心跳能及时下发） ----------
+                while not hb_queue.empty():
+                    try:
+                        yield hb_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
                 if mode == "values":
                     final_state = chunk
                 elif mode == "updates":
@@ -298,6 +324,13 @@ class LangGraphAgentService:
         except Exception as e:
             logger.error(f"[Graph] 图执行失败: {e}")
             graph_error = e
+        finally:
+            hb_stop.set()
+            hb_task.cancel()
+            try:
+                await hb_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         # ---------- Step 5: 汇总最终回复（对齐 legacy Case B / 轮次耗尽分支） ----------
         if graph_error is not None:
