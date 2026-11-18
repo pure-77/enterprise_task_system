@@ -7,6 +7,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from fastapi.sse import format_sse_event
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -128,6 +129,7 @@ async def agent_chat_stream(
     async def sse_generator():
         # B2: 改用 chat_stream async generator，边跑边 yield SSE 事件
         # H4: 捕获 asyncio.CancelledError，正确标识客户端中断
+        # 统一用 fastapi.sse.format_sse_event 生成 wire format，避免手写格式出错
         collected_tool_calls = []
         try:
             async for event_data in agent.chat_stream(
@@ -139,23 +141,34 @@ async def agent_chat_stream(
 
                 if ev == "tool_call_start":
                     # 工具开始执行：立即推，前端可渲染执行中的进度条（目前前端暂未消费，留口子）
-                    yield f"event: tool_call_start\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    yield format_sse_event(
+                        event="tool_call_start",
+                        data_str=json.dumps(data, ensure_ascii=False),
+                    )
                 elif ev == "tool_call_done":
                     # 工具执行完：先收集，再立即推完整数组（前端累积更新 tool_calls 字段）
                     tc_dict = data["tool_call"]
                     tc_dict["meta"] = ToolRegistry.get_tool_meta(data["tool_name"])
                     collected_tool_calls.append(tc_dict)
-                    yield f"event: tool_call\ndata: {json.dumps(collected_tool_calls, ensure_ascii=False)}\n\n"
+                    yield format_sse_event(
+                        event="tool_call",
+                        data_str=json.dumps(collected_tool_calls, ensure_ascii=False),
+                    )
                 elif ev == "heartbeat":
-                    # 纯 SSE 注释行：EventSource 完全忽略，但保持连接有字节流动
-                    # （不用 event:/data: 头，避免被当成默认 message 事件触发前端回调）
-                    yield f": keepalive {data.get('ts', '')}\n\n"
+                    # 纯注释行：EventSource 完全忽略，但保持连接有字节流动
+                    yield format_sse_event(comment=f"keepalive {data.get('ts', '')}")
                 elif ev == "message":
                     # 逐字符自然语言回复，直接推
-                    yield f"event: message\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    yield format_sse_event(
+                        event="message",
+                        data_str=json.dumps(data, ensure_ascii=False),
+                    )
                 elif ev == "confirm_request":
                     # 危险操作待确认：实时透传给前端渲染确认卡片
-                    yield f"event: confirm_request\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    yield format_sse_event(
+                        event="confirm_request",
+                        data_str=json.dumps(data, ensure_ascii=False),
+                    )
                 elif ev == "done":
                     # 推 done 事件（带完整元数据）
                     # tool_call 列表已在每次 tool_call_done 时实时推送，这里不再重复
@@ -164,7 +177,10 @@ async def agent_chat_stream(
                         "model_used": data.get("model_used", ""),
                         "total_tool_calls": data.get("total_tool_calls", len(collected_tool_calls)),
                     }
-                    yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+                    yield format_sse_event(
+                        event="done",
+                        data_str=json.dumps(done_payload, ensure_ascii=False),
+                    )
 
         except asyncio.CancelledError:
             # H4: 客户端断开连接，agent.chat_stream() 后台可能还在跑，
@@ -174,8 +190,10 @@ async def agent_chat_stream(
 
         except Exception as e:
             logger.exception("[Agent] /chat/stream 异常")
-            error_data = json.dumps({"error": str(e)})
-            yield f"event: error\ndata: {error_data}\n\n"
+            yield format_sse_event(
+                event="error",
+                data_str=json.dumps({"error": str(e)}, ensure_ascii=False),
+            )
 
     return StreamingResponse(
         sse_generator(),

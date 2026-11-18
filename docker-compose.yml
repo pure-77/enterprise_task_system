@@ -1,7 +1,9 @@
 # =============================================================================
-# 生产部署编排：MySQL + Redis + FastAPI（含前端静态站点）+ Celery worker/beat
+# 生产部署编排：MySQL + Redis + PostgreSQL(pgvector) + FastAPI（含前端静态站点）
+#                + Celery worker/beat
 #   - 不使用 nginx，前端由 backend 容器内的 FastAPI 直接托管（8001 端口）
 #   - MySQL / Redis 不对外发布端口，仅在容器网络内互通
+#   - pgvector 为 Agent 的 Checkpointer / Store 预留：pg17 + vector 扩展
 #   - 敏感配置（LLM Key、邮箱、JWT）从 backend/.env 读取，compose 里只做必要覆盖
 # =============================================================================
 
@@ -40,6 +42,37 @@ services:
     # ports:
     #   - "6379:6379"
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL + pgvector：Agent 短期记忆（LangGraph Checkpointer）与长期记忆（Store）
+  #   - 数据目录默认落到宿主机 /data/pgvector_data，可用 PGVECTOR_DATA_DIR 覆盖
+  #   - 首次初始化时执行 docker/pgvector/init.sql 创建 vector 扩展
+  #   - 生产建议去掉 ports，仅容器网络内访问；如需本机 psql 调试再临时放开
+  # ---------------------------------------------------------------------------
+  pgvector:
+    image: pgvector/pgvector:pg17
+    container_name: pg-vector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGVECTOR_USER:-postgres}
+      POSTGRES_PASSWORD: ${PGVECTOR_PASSWORD:-Zwd531965692}
+      POSTGRES_DB: ${PGVECTOR_DB:-vector_db}
+      TZ: Asia/Shanghai
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=100
+    volumes:
+      - ${PGVECTOR_DATA_DIR:-/data/pgvector_data}:/var/lib/postgresql/data
+      - ./docker/pgvector/init.sql:/docker-entrypoint-initdb.d/10-vector.sql:ro
+    ports:
+      - "${PGVECTOR_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
   backend:
     build:
       context: .
@@ -58,6 +91,11 @@ services:
       AGENT_MCP_ENABLED: "true"
       AGENT_CHECKPOINTER: memory
       AGENT_TRACE_ENABLED: "true"
+      # 待 Agent 代码支持 PG 后端后再启用：
+      # 当前 Settings 为 extra=forbid，提前写入未知变量会导致启动失败
+      # AGENT_POSTGRES_URL: postgresql://${PGVECTOR_USER:-postgres}:${PGVECTOR_PASSWORD:-Zwd531965692}@pgvector:5432/${PGVECTOR_DB:-vector_db}
+      # AGENT_CHECKPOINTER: postgres
+      # AGENT_STORE_BACKEND: postgres
     ports:
       - "8001:8001"
     depends_on:
@@ -65,6 +103,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # 启用 PG 记忆后端后放开
+      # pgvector:
+      #   condition: service_healthy
     volumes:
       - uploads_data:/app/uploads
       - chroma_data:/app/data/chroma
@@ -89,6 +130,10 @@ services:
       AGENT_ENGINE: langgraph
       AGENT_MCP_ENABLED: "true"
       AGENT_CHECKPOINTER: memory
+      # 启用 PG 记忆后端后与此处同步放开：
+      # AGENT_POSTGRES_URL: postgresql://${PGVECTOR_USER:-postgres}:${PGVECTOR_PASSWORD:-Zwd531965692}@pgvector:5432/${PGVECTOR_DB:-vector_db}
+      # AGENT_CHECKPOINTER: postgres
+      # AGENT_STORE_BACKEND: postgres
     depends_on:
       mysql:
         condition: service_healthy

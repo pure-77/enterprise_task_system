@@ -14,8 +14,6 @@
 """
 import time
 
-from fastapi.sse import ServerSentEvent
-
 CHUNK_SIZE = 2  # 与 legacy 一致的文本分片大小
 
 

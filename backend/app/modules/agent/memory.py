@@ -4,6 +4,7 @@
 - Redis List 存储每轮对话 [user_msg, assistant_msg, user_msg, assistant_msg, ...]
 - Key: agent:memory:{workspace_id}:{user_id}  （不传 session_id 时）
       agent:memory:session:{session_id}         （传了 session_id 时）
+      agent:memory:session:{session_id}         （传了 session_id 时）
 - TTL: 24h（可配置），自动过期
 - 只保留最近 N 轮（可配置），防止上下文过长
 - 多模态图片只存 URL，不存 base64 原始数据
